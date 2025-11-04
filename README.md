@@ -111,6 +111,18 @@ Special **thanks** to all contributors of the GraphToolbox project:
 - Eloi Campagne 
 - Itai Zehavi
 
+## Citation
+If you use the GraphToolbox in your work, please cite the corresponding [paper](https://arxiv.org/pdf/2507.03690v3):
+
+```bibtex
+@misc{campagne2025graph,
+    author = {Campagne, Eloi and Amara-Ouali, Yvenn and Goude, Yannig and Kalogeratos, Argyris},
+    title = {Graph Neural Networks for Electricity Load Forecasting},
+    year = {2025},
+}
+```
+
+
 ## License
 
 This project is licensed under the GPL License - see the LICENSE file for details.
