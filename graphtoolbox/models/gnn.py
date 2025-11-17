@@ -1,246 +1,475 @@
 import torch
-from torch_geometric.nn import GATv2Conv, TransformerConv, GCNConv, SAGEConv
-from torch.nn import Linear, ReLU, LayerNorm
+from torch_geometric.nn import GATConv, TransformerConv, GCNConv, SAGEConv
 from inspect import signature
 from einops import rearrange
 from torch_geometric.nn.models.deepgcn import DeepGCNLayer
 
-import torch
-from torch_geometric.nn import GATv2Conv, TransformerConv, GCNConv, SAGEConv
-from torch.nn import Linear, ReLU, LayerNorm
-from inspect import signature
-from einops import rearrange
-from torch_geometric.nn.models.deepgcn import DeepGCNLayer
+import torch.nn as nn
+from torch_geometric.nn import (
+    APPNP, ChebConv, GatedGraphConv, MixHopConv, GCN2Conv,
+    DirGNNConv, GravNetConv, NNConv, EdgeConv, DNAConv, SignedConv
+)
 
-class myGNN(torch.nn.Module):
-    """
-    A flexible deep Graph Neural Network supporting various convolution types
-    (GATv2, TransformerConv, GCN, GraphSAGE) with residual connections.
+def _mlp(ch_in, ch_out, hidden=None, act=nn.ReLU, last_act=False):
+    hidden = hidden or max(ch_in, ch_out)
+    layers = [nn.Linear(ch_in, hidden), act()]
+    layers += [nn.Linear(hidden, ch_out)]
+    if last_act:
+        layers += [act()]
+    return nn.Sequential(*layers)
 
-    This model stacks multiple message-passing layers (`DeepGCNLayer`) and supports
-    optional attention-weight extraction for interpretability.
-
-    Parameters
-    ----------
-    in_channels : int
-        Number of input node features.
-    num_layers : int
-        Number of GNN layers to stack.
-    hidden_channels : int
-        Hidden dimension per layer.
-    out_channels : int
-        Output dimension (e.g. number of regression or classification targets).
-    conv_class : torch_geometric.nn.conv.MessagePassing, optional
-        Convolution class to use (default: ``GATv2Conv``).
-    conv_kwargs : dict, optional
-        Additional keyword arguments for the convolution layer (e.g. heads, dropout).
-
-    Attributes
-    ----------
-    node_encoder : torch.nn.Linear
-        Linear layer mapping input features to hidden space.
-    layers : torch.nn.ModuleList
-        Sequence of `DeepGCNLayer` blocks with residual connections.
-    norm_final : torch.nn.LayerNorm
-        Final normalization layer.
-    fc : torch.nn.Linear
-        Output linear layer mapping hidden features to predictions.
-
-    Notes
-    -----
-    - When using multi-head attention convolutions (e.g. GATv2), the model automatically
-      adjusts internal dimensions.
-    - Attention weights can be returned via `return_attention=True` for visualization.
-
-    Examples
-    --------
-    >>> model = myGNN(in_channels=16, hidden_channels=32, out_channels=1, num_layers=3)
-    >>> out = model(x, edge_index)
-    >>> out.shape
-    torch.Size([N, 1])
-    """
-    def __init__(self,
-                 in_channels,
-                 num_layers,
-                 hidden_channels,
-                 out_channels,
-                 **kwargs):
-        super(myGNN, self).__init__()
-
-        self.conv_class = kwargs.get('conv_class', GATv2Conv)
-        self.conv_kwargs = kwargs.get('conv_kwargs', {})
-
-        conv_params = signature(self.conv_class).parameters
-        self.use_heads = 'heads' in conv_params
-        self.heads = self.conv_kwargs.get('heads', 1) if self.use_heads else 1
-
-        in_dim = hidden_channels * self.heads if self.use_heads else hidden_channels
-        out_dim = hidden_channels
-
-        self.in_channels = in_channels
-        self.node_encoder = Linear(in_channels, in_dim)
-        self.num_layers = num_layers
+class ConvAdapter(nn.Module):
+    def __init__(self, conv_class, in_dim, hidden_channels, heads=1, base_kwargs=None):
+        super().__init__()
+        base_kwargs = base_kwargs or {}
+        self.conv_class = conv_class
+        self.in_dim = in_dim
         self.hidden_channels = hidden_channels
-        self.out_channels = out_channels
+        self.heads = heads
+        name = conv_class.__name__
 
-        self.layers = torch.nn.ModuleList()
+        try:
+            ctor_params = set(signature(conv_class).parameters.keys())
+        except Exception:
+            ctor_params = set()
+
+        kwargs = {}
+        supports_heads = "heads" in ctor_params
+        supports_concat = "concat" in ctor_params
+
+        # --- dimension policy ---
+        if "channels" in ctor_params:
+            kwargs["channels"] = in_dim
+        if "in_channels" in ctor_params:
+            kwargs["in_channels"] = in_dim
+        if "out_channels" in ctor_params:
+            if supports_heads and supports_concat and base_kwargs.get("concat", True):
+                if self.heads == 0 or (in_dim % self.heads) != 0:
+                    kwargs["out_channels"] = in_dim
+                    kwargs["concat"] = False
+                else:
+                    kwargs["out_channels"] = in_dim // self.heads
+                    kwargs["concat"] = True
+            else:
+                # keep feature size unchanged across layers
+                if name == "MixHopConv" and "k" in ctor_params:
+                    k = base_kwargs.get("k", 2)
+                    kwargs["out_channels"] = max(1, in_dim // (k + 1))
+                else:
+                    kwargs["out_channels"] = in_dim
+        if supports_heads:
+            kwargs["heads"] = self.heads
+        if "cached" in ctor_params:
+            kwargs["cached"] = False
+        if "add_self_loops" in ctor_params:
+            kwargs["add_self_loops"] = True
+        if "edge_dim" in ctor_params:
+            kwargs["edge_dim"] = base_kwargs.get("edge_dim", 1)
+
+        # --- specific layer defaults ---
+        if conv_class is APPNP:
+            kwargs.update({"K": 4, "alpha": 0.9})
+        if conv_class is ChebConv and "K" in ctor_params:
+            kwargs["K"] = 3
+        if conv_class is GatedGraphConv and "num_layers" in ctor_params:
+            kwargs["num_layers"] = 2
+            if "out_channels" in ctor_params:
+                kwargs["out_channels"] = in_dim
+        if conv_class is MixHopConv and "k" in ctor_params:
+            kwargs["k"] = base_kwargs.get("k", 2)
+        if conv_class is GCN2Conv and "alpha" in ctor_params:
+            kwargs.setdefault("alpha", 0.1)
+        if name == "SSGConv" and "alpha" in ctor_params:
+            kwargs.setdefault("alpha", 0.1)
+        if name == "CGConv":
+            # CGConv requires 'dim' to match edge_attr size (not node feature size)
+            kwargs["dim"] = base_kwargs.get("dim", base_kwargs.get("edge_dim", 1))
+        if name == "GPSConv":
+            # provide a sensible base message-passing conv
+            kwargs["conv"] = GCNConv
+        if name == "PANConv":
+            kwargs["filter_size"] = 2
+        if name == "PDNConv":
+            kwargs["hidden_channels"] = in_dim
+        if conv_class is DirGNNConv and "conv" in ctor_params:
+            kwargs["conv"] = GCNConv  # default base conv
+        if conv_class is GravNetConv:
+            kwargs.setdefault("space_dimensions", min(4, max(2, in_dim)))
+            kwargs.setdefault("propagate_dimensions", min(in_dim, 16))
+            kwargs.setdefault("k", 3)
+
+        # constructor-MLPs
+        if conv_class is NNConv:
+            oc = kwargs.get("out_channels", in_dim)
+            w_out = in_dim * oc
+            nn_edge = _mlp(base_kwargs.get("edge_dim", 1), w_out, hidden=in_dim)
+            kwargs["nn"] = nn_edge
+        if conv_class is EdgeConv and "nn" in ctor_params:
+            kwargs["nn"] = _mlp(2 * in_dim, in_dim, hidden=in_dim)
+
+        # For GIN/GINE provide MLPs
+        if name in ("GINConv", "GINEConv") and "nn" in ctor_params:
+            kwargs["nn"] = _mlp(in_dim, kwargs.get("out_channels", in_dim), hidden=in_dim)
+        if name == "SignedConv" and "first_aggr" in ctor_params:
+            kwargs.setdefault("first_aggr", "tanh")
+
+        # instantiate convolution
+        self.conv = conv_class(**kwargs)
+        self.capture_attention = False
+        self.last_attention = None
+
+        try:
+            self._forward_params = set(signature(self.conv.forward).parameters.keys())
+        except Exception:
+            self._forward_params = set()
+
+    def forward(self, x, edge_index, x0=None, **tensors):
+        # DNAConv expects x: [N, L, C]; fallback to L=1 if given [N, C]
+        if isinstance(self.conv, DNAConv) and x.dim() == 2:
+            x = x.unsqueeze(1)
+
+        call = {"x": x}
+        if "edge_index" in self._forward_params:
+            call["edge_index"] = edge_index
+        elif "hyperedge_index" in self._forward_params:
+            call["hyperedge_index"] = edge_index
+
+        # common optional tensors
+        for name in ("edge_weight", "edge_attr", "pos", "batch", "edge_type", "pseudo", "normal"):
+            if name in self._forward_params and tensors.get(name) is not None:
+                call[name] = tensors[name]
+
+        E = edge_index.size(1)
+        dev = x.device
+
+        # dummies where required
+        if "pos" in self._forward_params and "pos" not in call:
+            call["pos"] = torch.zeros(x.size(0), 3, device=dev)
+        if "normal" in self._forward_params and "normal" not in call:
+            call["normal"] = torch.zeros(x.size(0), 3, device=dev)
+        if "edge_type" in self._forward_params and "edge_type" not in call:
+            call["edge_type"] = torch.zeros(E, dtype=torch.long, device=dev)
+        if "pseudo" in self._forward_params and "pseudo" not in call:
+            dim = getattr(self.conv, "dim", 3)
+            call["pseudo"] = torch.zeros(E, dim, device=dev)
+        if "x_0" in self._forward_params and x0 is not None:
+            call["x_0"] = x0
+
+        # Some convs hard-require edge_attr; provide a safe default
+        needs_edge_attr = isinstance(self.conv, (TransformerConv, NNConv, SignedConv)) or \
+                          ("edge_attr" in self._forward_params and "edge_attr" not in call)
+        if needs_edge_attr and "edge_attr" not in call:
+            ed = getattr(self.conv, "edge_dim", 1)
+            call["edge_attr"] = torch.ones(E, ed, device=dev)
+
+        # SignedConv special case
+        if isinstance(self.conv, SignedConv):
+            call["pos_edge_index"] = edge_index
+            call["neg_edge_index"] = edge_index
+
+        # TransformerConv fallback already covered above via needs_edge_attr
+        # --- attention capture ---
+        supports_attention = "return_attention_weights" in self._forward_params
+        self.last_attention = None
+        if self.capture_attention and supports_attention:
+            out, attn = self.conv(**{**call, "return_attention_weights": True})
+            if isinstance(attn, tuple) and len(attn) == 2:
+                ei, aw = attn
+                self.last_attention = (ei.detach().cpu(), aw.detach().cpu())
+            else:
+                self.last_attention = (None, torch.as_tensor(attn).detach().cpu())
+            return out
+        else:
+            return self.conv(**call)
+
+class myGNN(nn.Module):
+    def __init__(
+        self,
+        in_channels: int,
+        num_layers: int,
+        hidden_channels: int,
+        out_channels: int,
+        conv_class=GATConv,
+        conv_kwargs=None,
+        heads=1,
+        **kwargs
+    ):
+        super().__init__()
+        self.conv_class = conv_class
+        self.conv_kwargs = conv_kwargs or {}
+        self.heads = heads
+        self.hidden_channels = hidden_channels
+        self.num_layers = num_layers
+
+        try:
+            ctor_params = set(signature(conv_class).parameters.keys())
+        except Exception:
+            ctor_params = set()
+
+        use_heads = "heads" in ctor_params
+        block_dim = self.hidden_channels * (heads if use_heads else 1)
+        self.node_encoder = nn.Linear(in_channels, block_dim)
+        self.layers = nn.ModuleList()
 
         for _ in range(num_layers):
-            valid_keys = conv_params.keys()
-            conv_args = {}
-            potential_args = {
-                'in_channels': in_dim,
-                'out_channels': out_dim,
-                'heads': self.heads,
-                'concat': True,
-                'edge_dim': 1,
-                'add_self_loops': False
-            }
+            conv = ConvAdapter(conv_class, in_dim=block_dim,
+                               hidden_channels=self.hidden_channels,
+                               heads=heads, base_kwargs=self.conv_kwargs)
+            norm = nn.LayerNorm(block_dim)
+            act = nn.ReLU(inplace=True)
+            self.layers.append(DeepGCNLayer(conv=conv, norm=norm, act=act, block="res+"))
 
-            for k, v in self.conv_kwargs.items():
-                if k in valid_keys:
-                    conv_args[k] = v
+        self.norm_final = nn.LayerNorm(block_dim)
+        self.fc = nn.Linear(block_dim, out_channels)
 
-            for k, v in potential_args.items():
-                if k in valid_keys and k not in conv_args:
-                    conv_args[k] = v
-
-            conv = self.conv_class(**conv_args)
-            norm = LayerNorm(in_dim, elementwise_affine=True)
-            act = ReLU(inplace=True)
-            layer = DeepGCNLayer(conv=conv, norm=norm, act=act, block='res+', ckpt_grad=True)
-            self.layers.append(layer)
-
-        self.norm_final = LayerNorm(in_dim, elementwise_affine=True)
-        self.fc = Linear(in_dim, out_channels)
-
-    def forward(self, x, edge_index, edge_weight=None, return_attention=False, **kwargs):
-        """
-        Forward pass through the graph neural network.
-
-        Parameters
-        ----------
-        x : torch.Tensor
-            Node feature matrix of shape ``[N, F]`` or ``[N, B, F]``.
-        edge_index : torch.LongTensor
-            Graph connectivity in COO format.
-        edge_weight : torch.Tensor, optional
-            Edge weights, shape ``[E]`` or ``[E, 1]`` depending on the convolution.
-        return_attention : bool, default=False
-            If True, also returns layer-wise attention weights.
-        **kwargs :
-            Optional keys when ``return_attention=True``:
-                - ``batch_size`` : int
-                - ``num_edges_per_graph`` : int
-                - ``save`` : bool
-                - ``save_path`` : str
-
-        Returns
-        -------
-        torch.Tensor or tuple
-            Model output (and optionally attention weights dictionary).
-        """
+    def forward(self, x, edge_index, edge_weight=None, edge_attr=None, return_attention=False, **kwargs):
+        batch_vec = kwargs.get("batch", None)
         if x.dim() == 3:
-            # garder N,B pour construire l’edge_index bloc-diagonal si besoin
+            # Rare case: user still passes [N,B,F]
             N_per_graph, B, _ = x.shape
-            x = rearrange(x, 'n b c -> (b n) c')
+            x = rearrange(x, "n b c -> (b n) c")
+            if batch_vec is None:
+                batch_vec = torch.arange(B).repeat_interleave(N_per_graph).to(x.device)
         else:
-            N_per_graph, B = x.shape[0], 1
+            # Standard PyG: x is already [BN, C], so deduce info from batch vector
+            if batch_vec is None:
+                # FALLBACK: treat as one big graph (incompatible with attention aggregation)
+                B = 1
+                N_per_graph = x.shape[0]
+                batch_vec = torch.zeros(x.shape[0], dtype=torch.long, device=x.device)
+            else:
+                B = int(batch_vec.max().item()) + 1
+                N_per_graph = (batch_vec == 0).sum().item()
 
-        if edge_weight is not None and self.conv_class == TransformerConv:
-            edge_weight = edge_weight.unsqueeze(1)
         x = self.node_encoder(x)
-
-        # Préparer edge_index/edge_weight locaux (bloc-diagonal si B>1)
-        local_edge_index = edge_index
-        local_edge_weight = edge_weight
-        if return_attention and B > 1:
-            local_edge_index = _make_block_diag_edge_index(edge_index, N_per_graph, B)
-            if edge_weight is not None:
-                # on répète les poids sur chaque graphe
-                repeat_times = B if edge_weight.dim() == 1 else (B, 1)
-                local_edge_weight = edge_weight.repeat(repeat_times)
+        x0 = x  # for DeepGCN residuals
 
         if return_attention:
-            save = kwargs.get("save", False)
-            save_path = kwargs.get("save_path", None)
-            num_edges_per_graph = edge_index.size(1)
-            num_graphs = B
-            if save:
-                attentions = {
-                    "attention_weights": [],   # liste (L) de tensors [E_graph*B, H]
-                    "edge_idx": edge_index.detach().cpu(),  # [2, E_graph] du graphe simple
-                    "num_graphs": num_graphs,  # B
-                }
-            else:
-                attentions = {
-                    "first_graph": [],         # par couche: (weights_first_graph [E_graph,H], edge_idx_first [2,E_graph])
-                    "mean": [],                # par couche: [E_graph, H] moyenne sur B
-                    "std": []                  # par couche: [E_graph, H] std sur B
-                }
+            attentions = {
+                "first_graph": [],  # list of (E_layer, heads)
+                "mean": [],         # list of (E_layer, heads)
+                "std": []           # list of (E_layer, heads)
+            }
 
-        for _, layer in enumerate(self.layers):
-            if return_attention:
-                _, attn = layer.conv(x, local_edge_index, local_edge_weight, return_attention_weights=True)
-                edge_idx_all, attn_weights_all = attn  # edge_idx_all: [2, E_graph*B]; attn_weights_all: [E_graph*B, H]
+        for layer in self.layers:
+            conv_adapter = layer.conv
+            conv_adapter.capture_attention = bool(return_attention)
 
-                if save:
-                    attentions["attention_weights"].append(attn_weights_all.detach().cpu())
-                    del attn_weights_all
+            out = layer(
+                x, edge_index,
+                edge_weight=edge_weight,
+                x0=x0,
+                batch=batch_vec
+            )
+            x = out
+
+            if return_attention and conv_adapter.last_attention is not None:
+                ei, aw = conv_adapter.last_attention
+                # ei: [2, E_total], aw: [E_total, heads]
+                E_total = aw.size(0)
+
+                if B == 1:
+                    # Single graph: trivial mapping
+                    att_first = aw
+                    att_mean = aw
+                    att_std = torch.zeros_like(aw)
                 else:
-                    # reshape propre: [B, E_graph, H]
-                    att_reshaped = attn_weights_all.view(num_graphs, num_edges_per_graph, self.heads)
-                    att_first = att_reshaped[0]  # [E_graph, H]
-                    attentions["first_graph"].append((att_first.cpu().detach(), edge_index.cpu().detach()))
-                    attentions["mean"].append(att_reshaped.mean(dim=0).cpu().detach())
-                    attentions["std"].append(att_reshaped.std(dim=0).cpu().detach())
-                    del att_reshaped, attn_weights_all
+                    # Rebuild (B, E_graph, heads)
+                    E_graph = E_total // B
+                    att_reshaped = aw.view(B, E_graph, -1)  # [B, E_graph, H]
 
-            if 'edge_weight' in signature(layer.conv.forward).parameters or 'edge_attr' in signature(layer.conv.forward).parameters:
-                x = layer(x, local_edge_index, local_edge_weight)
-            else:
-                x = layer(x, local_edge_index)
+                    att_first = att_reshaped[0]             # [E_graph, H]
+                    att_mean = att_reshaped.mean(dim=0)     # [E_graph, H]
+                    att_std = att_reshaped.std(dim=0)       # [E_graph, H]
+
+                attentions["first_graph"].append(att_first.detach().cpu())
+                attentions["mean"].append(att_mean.detach().cpu())
+                attentions["std"].append(att_std.detach().cpu())
 
         x = self.layers[0].act(self.norm_final(x))
         x = self.fc(x)
-
-        if return_attention and save:
-            if save_path is None:
-                raise ValueError("You must provide `save_path` when `save=True`.")
-            torch.save(attentions, save_path)
-
         return (x, attentions) if return_attention else x
-
-def _make_block_diag_edge_index(edge_index: torch.Tensor, num_nodes: int, batch_size: int) -> torch.Tensor:
-    """
-    Create a block-diagonal edge_index representing a batch of disjoint, identical graphs.
-    Parameters
-    ----------
-    edge_index : torch.Tensor
-        2 x E tensor of edge indices (source, target) for a single graph.
-    num_nodes : int
-        Number of nodes in the single graph (used to offset node indices).
-    batch_size : int
-        Number of graph copies to stack; if 1 the original edge_index is returned.
-    Returns
-    -------
-    torch.Tensor
-        2 x (batch_size * E) edge_index for the disjoint union of the batch.
-        The returned tensor has the same dtype and device as the input.
-    Notes
-    -----
-    Each copy's node indices are shifted by k * num_nodes (for k in [0, batch_size-1])
-    so that graphs are kept disjoint when combined.
-    """
     
-    if batch_size == 1:
-        return edge_index
-    offsets = torch.arange(batch_size, device=edge_index.device, dtype=edge_index.dtype) * num_nodes
-    src = edge_index[0].unsqueeze(1) + offsets.unsqueeze(0)  # [E, B]
-    dst = edge_index[1].unsqueeze(1) + offsets.unsqueeze(0)  # [E, B]
-    eidx_bd = torch.stack([src.reshape(-1), dst.reshape(-1)], dim=0)  # [2, B*E]
-    return eidx_bd
+class AdditiveGraphModel(nn.Module):
+    """
+    Additive Graph Model (GAM-like GNN):
 
+    For feature groups g in G:
+
+        h_g = Encoder_g(x_g)     # local, group-specific MLP
+        y_g = GNN(h_g, G)        # shared graph backbone (myGNN), scalar per node
+
+    Final prediction per node:
+
+        y_hat = bias + sum_g y_g
+
+    This is *strictly additive* in the feature groups: no cross-group
+    mixing happens inside the network; groups only interact via the
+    final summation.
+    """
+
+    def __init__(
+        self,
+        feature_group_dims: dict,
+        num_layers: int,
+        hidden_channels: int,
+        out_channels: int,
+        conv_class=None,
+        conv_kwargs=None,
+        **kwargs
+    ):
+        super().__init__()
+
+        if conv_class is None:
+            conv_class = GCNConv
+        conv_kwargs = conv_kwargs or {}
+
+        self.feature_group_dims = feature_group_dims
+        self.hidden_channels = hidden_channels
+        self.num_layers = num_layers
+        self.out_channels = out_channels
+        self.heads = conv_kwargs.get('heads', 1)
+        self.group_names = list(feature_group_dims.keys())
+
+        # 1) Encoder per feature group (local MLPs, no graph info yet)
+        self.encoders = nn.ModuleDict()
+        for gname, dim in feature_group_dims.items():
+            self.encoders[gname] = nn.Sequential(
+                nn.Linear(dim, hidden_channels),
+                nn.ReLU(),
+                nn.Linear(hidden_channels, hidden_channels),
+                nn.ReLU(),
+            )
+
+        # 2) Shared GNN backbone, applied once per group
+        #    in_channels = hidden_channels (per group)
+        self.gnn_branch = myGNN(
+            in_channels=hidden_channels,
+            num_layers=num_layers,
+            hidden_channels=hidden_channels,
+            out_channels=out_channels,
+            conv_class=conv_class,
+            conv_kwargs=conv_kwargs,
+        )
+
+        # 3) Global bias term 
+        self.bias = nn.Parameter(torch.zeros(1))
+
+        # 4) Optional multi-output head (post-sum expansion)
+        if self.out_channels > 1:
+            self.multi_out_head = nn.Linear(1, self.out_channels)
+
+        # 5) Build index slices from provided group dimensions (sequential layout)
+        #    Assumes input x columns are ordered by groups in the same order.
+        self.group_index_map = {}
+        offset = 0
+        for gname, dim in feature_group_dims.items():
+            self.group_index_map[gname] = slice(offset, offset + dim)
+            offset += dim
+
+    def forward(
+        self,
+        x,
+        edge_index,
+        edge_weight=None,
+        mask=None,  # kept for API compatibility, unused
+        return_attention: bool = False,
+        return_group_outputs: bool = False,
+        batch=None,
+    ):
+        """
+        Parameters
+        ----------
+        x : Tensor [N, F]
+            Node features; columns ordered as concatenation of feature groups.
+        edge_index : LongTensor [2, E]
+            Graph connectivity.
+        edge_weight : Optional[Tensor [E]]
+        mask : unused (kept for Trainer API compatibility)
+        return_attention : bool
+            If True, returns per-group attention statistics from the shared GNN
+            (where supported by conv_class).
+        return_group_outputs : bool
+            If True, also returns a dict of per-group node-wise contributions.
+        batch : Optional[LongTensor [N]]
+            Batch vector for multiple graphs in a minibatch.
+
+        Returns
+        -------
+        If return_attention == False and return_group_outputs == False:
+            y_hat : Tensor [N, out_channels]   (usually [N, 1])
+
+        If return_group_outputs == True:
+            y_hat, group_outputs
+
+        If return_attention == True:
+            y_hat, group_outputs, attention_per_group
+        """
+        device = self.bias.device
+
+        x = x.to(device)
+        if edge_index is not None:
+            edge_index = edge_index.to(device)
+        if edge_weight is not None:
+            edge_weight = edge_weight.to(device)
+        if batch is not None:
+            batch = batch.to(device)
+
+        N = x.size(0)
+
+        total = torch.zeros(N, 1, device=device)
+
+        group_outputs = {}  # gname -> [N, 1]
+        attention_per_group = {}  # gname -> attention dict from myGNN
+
+        for gname, sl in self.group_index_map.items():
+            x_g = x[:, sl]  # [N, d_g]
+
+            if x_g.dim() == 1:
+                x_g = x_g.unsqueeze(-1)
+
+            h_g = self.encoders[gname](x_g)  # [N, hidden_channels]
+
+            if return_attention:
+                y_g, attn_g = self.gnn_branch(
+                    h_g,
+                    edge_index,
+                    edge_weight=edge_weight,
+                    return_attention=True,
+                    batch=batch,
+                )
+                attention_per_group[gname] = attn_g
+            else:
+                y_g = self.gnn_branch(
+                    h_g,
+                    edge_index,
+                    edge_weight=edge_weight,
+                    return_attention=False,
+                    batch=batch,
+                )
+
+            if y_g.dim() == 1:
+                y_g = y_g.unsqueeze(-1)
+
+            group_outputs[gname] = y_g  # store raw contribution
+            total = total + y_g  # additive aggregation
+
+        y_hat = total + self.bias  # [N, 1] with broadcasting
+
+        if self.out_channels > 1:
+            y_hat = self.multi_out_head(y_hat)
+
+        if not return_group_outputs and not return_attention:
+            return y_hat
+
+        if return_attention and not return_group_outputs:
+            return y_hat, group_outputs, attention_per_group
+
+        if return_attention and return_group_outputs:
+            return y_hat, group_outputs, attention_per_group
+
+        return y_hat
+    
 class GCNEncoder(torch.nn.Module):
     """
     Simple 2-layer Graph Convolutional Network encoder.
