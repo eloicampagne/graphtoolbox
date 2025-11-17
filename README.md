@@ -16,11 +16,12 @@ GraphToolbox is a Python package designed for graph machine learning focused on 
 - Visualization tools for graph data and model results.
 
 ## Convolutions 
-Convolutions that were tried with myGNN:
+We benchmarked the entire collection of `torch_geometric.nn.conv` layers against `myGNN`, evaluating whether each operator can be instantiated and run end-to-end with standard node-feature inputs and a homogeneous graph structure.
 
-- 🟢 = working ;
-- 🔴 = failing ;
-- ⚪️ = skipped (device limitations)
+Legend:
+- 🟢 = Working (fully compatible with `myGNN`)
+- 🔴 = Failing (missing mandatory arguments, incompatible tensor shapes, or structural assumptions not met)
+- ⚪️ = Skipped (requires CUDA-specific dependencies or device-restricted libraries)
 
 | Convolution Type               | Status  | Notes |
 |-------------------------|---------|-------|
@@ -45,6 +46,8 @@ Detailed statistics per status:
 | 🔴 | **17** | **26.2 %** |
 | ⚪️ | **13** | **20.0 %** |
 | **Total Tested** | **65** | **100%** |
+
+If you spot a missing convolution, find an incompatibility, or want to help extend support, contributions are warmly welcomed! Feel free to open an issue or submit a PR so we can improve these results.
 
 
 ## Installation
