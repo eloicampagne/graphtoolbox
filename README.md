@@ -15,6 +15,23 @@ GraphToolbox is a Python package designed for graph machine learning focused on 
 - Training and evaluation utilities for graph-based models.
 - Visualization tools for graph data and model results.
 
+Convolutions that were tried with myGNN [🟢 = working, 🔴 = failing, ⚪️ = skipped (device limitations)]
+
+| Conv Type               | Status  | Notes |
+|-------------------------|---------|-------|
+| GCN / Spectral          |🟢| GCNConv, ChebConv, SGConv, SSGConv |
+| Attention-based         |🟢| GAT, GATv2, SuperGAT, TransformerConv |
+| MPNN (neighborhood)     |🟢| SAGE, GENConv, GraphConv, MFConv |
+| MLP-based (GIN-style)   |🟢| GIN, GINE |
+| Edge-conditioned        |🟢| NNConv |
+| Dynamic aggregators     |🔴| PNAConv, MixHopConv |
+| Relational              |🔴| RGCNConv, RGATConv, FastRGCNConv |
+| Heterogeneous graphs    |⚪️| HANConv, HGTConv, HeteroConv |
+| Point-cloud             |⚪️| PointNetConv, PointConv, XConv |
+| Hypergraph              |⚪️| HypergraphConv |
+| Clustering              |🟢| ClusterGCNConv |
+| Physics / Geometry      |🟢| FeaSt, GravNet⚪️ (missing torch-cluster) |
+
 ## Installation
 
 To install GraphToolbox, clone the repository and install the dependencies:
