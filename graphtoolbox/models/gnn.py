@@ -331,7 +331,6 @@ class AdditiveGraphModel(nn.Module):
         self.heads = conv_kwargs.get('heads', 1)
         self.group_names = list(feature_group_dims.keys())
 
-        # 1) Encoder per feature group (local MLPs, no graph info yet)
         self.encoders = nn.ModuleDict()
         for gname, dim in feature_group_dims.items():
             self.encoders[gname] = nn.Sequential(
@@ -341,8 +340,6 @@ class AdditiveGraphModel(nn.Module):
                 nn.ReLU(),
             )
 
-        # 2) Shared GNN backbone, applied once per group
-        #    in_channels = hidden_channels (per group)
         self.gnn_branch = myGNN(
             in_channels=hidden_channels,
             num_layers=num_layers,
@@ -352,15 +349,8 @@ class AdditiveGraphModel(nn.Module):
             conv_kwargs=conv_kwargs,
         )
 
-        # 3) Global bias term 
         self.bias = nn.Parameter(torch.zeros(1))
 
-        # 4) Optional multi-output head (post-sum expansion)
-        if self.out_channels > 1:
-            self.multi_out_head = nn.Linear(1, self.out_channels)
-
-        # 5) Build index slices from provided group dimensions (sequential layout)
-        #    Assumes input x columns are ordered by groups in the same order.
         self.group_index_map = {}
         offset = 0
         for gname, dim in feature_group_dims.items():
@@ -436,7 +426,6 @@ class AdditiveGraphModel(nn.Module):
                     edge_index,
                     edge_weight=edge_weight,
                     return_attention=True,
-                    batch=batch,
                 )
                 attention_per_group[gname] = attn_g
             else:
@@ -445,7 +434,6 @@ class AdditiveGraphModel(nn.Module):
                     edge_index,
                     edge_weight=edge_weight,
                     return_attention=False,
-                    batch=batch,
                 )
 
             if y_g.dim() == 1:
@@ -454,22 +442,16 @@ class AdditiveGraphModel(nn.Module):
             group_outputs[gname] = y_g  # store raw contribution
             total = total + y_g  # additive aggregation
 
-        y_hat = total + self.bias  # [N, 1] with broadcasting
-
-        if self.out_channels > 1:
-            y_hat = self.multi_out_head(y_hat)
-
+        y_hat = total + self.bias  # [N, out_channels] with broadcasting
+        
         if not return_group_outputs and not return_attention:
             return y_hat
-
         if return_attention and not return_group_outputs:
             return y_hat, group_outputs, attention_per_group
-
         if return_attention and return_group_outputs:
             return y_hat, group_outputs, attention_per_group
-
         return y_hat
-    
+            
 class GCNEncoder(torch.nn.Module):
     """
     Simple 2-layer Graph Convolutional Network encoder.
