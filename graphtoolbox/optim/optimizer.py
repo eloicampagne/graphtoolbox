@@ -1,5 +1,6 @@
 from graphtoolbox.data.dataset import *
 from graphtoolbox.utils.helper_functions import *
+import inspect
 import optuna
 from optuna_dashboard import run_server
 from torch_geometric.loader import DataLoader as PyGDataLoader
@@ -40,6 +41,8 @@ class Optimizer():
         In-memory storage backend for optimization results.
     is_optimized : bool
         Whether the optimization process has been executed.
+    logger : logging.Logger
+        Logger instance for progress and diagnostic output.
 
     Examples
     --------
@@ -150,36 +153,45 @@ class Optimizer():
         sampled = {}
         for param, (vmin, vmax) in self.optim_kwargs.items():
             if param == "batch_size":
-                continue   
+                continue
+
             if isinstance(vmin, int):
                 sampled[param] = trial.suggest_int(param, vmin, vmax)
             elif isinstance(vmin, float):
+                sampled[param] = (
+                    trial.suggest_float(param, vmin, vmax, log=(param == "lr"))
+                )
                 if param == "lr":
-                    sampled[param] = trial.suggest_float(param, vmin, vmax, log=True)
                     self.lr = sampled[param]
-                else:
-                    sampled[param] = trial.suggest_float(param, vmin, vmax, log=False)
             else:
                 raise NotImplementedError(
                     f"[Optimizer] Unsupported type for param {param}: {type(vmin)}"
                 )
+
+        sig = inspect.signature(self.model_class.__init__)
+        # Parameters explicitly belonging to the model
+        model_param_names = {
+            p.name
+            for p in sig.parameters.values()
+            if p.name not in ("self", "args", "kwargs")
+        }
+        model_kwargs = {k: v for k, v in sampled.items() if k in model_param_names}
+        conv_kwargs = {k: v for k, v in sampled.items() if k not in model_param_names}
+
         is_additive = self.model_class.__name__ == "AdditiveGraphModel"
         if is_additive:
             feature_group_dims = self.dataset_train.feature_group_dims
             if feature_group_dims is None:
                 raise RuntimeError(
-                    "[Optimizer] feature_group_dims is required for AdditiveGraphModel.\n"
-                    "Set dataset_kwargs['feature_groups']=... in GraphDataset."
+                    "[Optimizer] feature_group_dims is required for AdditiveGraphModel."
                 )
-
-            gnn_layers = sampled.get("num_layers") or sampled.get("gnn_layers")
 
             model = self.model_class(
                 feature_group_dims=feature_group_dims,
-                gnn_layers=gnn_layers,
                 out_channels=self.out_channels,
                 conv_class=self.conv_class,
-                conv_kwargs=sampled,
+                conv_kwargs=conv_kwargs,
+                **model_kwargs,
             )
 
         else:
@@ -187,12 +199,13 @@ class Optimizer():
                 in_channels=self.dataset_val.num_node_features,
                 out_channels=self.out_channels,
                 conv_class=self.conv_class,
-                conv_kwargs=sampled,
-                **sampled
+                conv_kwargs=conv_kwargs,
+                **model_kwargs,
             )
 
         return model
-    
+
+
     def _objective(self, trial):
         """
         Objective function evaluated by Optuna for each trial.
@@ -293,7 +306,7 @@ class Optimizer():
         for key, value in trial.params.items():
             print("    {}: {}".format(key, value))
 
-        result_dir = f"./results_optim/{self.conv_class.__name__}"
+        result_dir = f"./results_optim_{self.conv_class.__name__}"
         os.makedirs(result_dir, exist_ok=True)
 
         result_file = os.path.join(
