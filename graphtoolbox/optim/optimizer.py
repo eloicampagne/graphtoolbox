@@ -1,12 +1,9 @@
 from graphtoolbox.data.dataset import *
 from graphtoolbox.utils.helper_functions import *
-import datetime
-import logging
 import optuna
 from optuna_dashboard import run_server
-import sys
 from torch_geometric.loader import DataLoader as PyGDataLoader
-from torch_geometric.nn.conv import GATv2Conv
+from torch_geometric.nn.conv import GATConv
 from tqdm import tqdm
 
 class Optimizer():
@@ -43,8 +40,6 @@ class Optimizer():
         In-memory storage backend for optimization results.
     is_optimized : bool
         Whether the optimization process has been executed.
-    logger : logging.Logger
-        Logger instance for progress and diagnostic output.
 
     Examples
     --------
@@ -52,29 +47,18 @@ class Optimizer():
     >>> opt.optimize(n_trials=30)
     >>> opt.run_on_server()  # visualize results
     """
-    def __init__(self, model, dataset_train: GraphDataset, dataset_val: GraphDataset, optim_kwargs: Dict = None, **kwargs):
+    def __init__(self, model, dataset_train: GraphDataset, dataset_val: GraphDataset, out_channels: int = 48, optim_kwargs: Dict = None, **kwargs):
         self.model_class = model
         self.dataset_train = dataset_train
         self.dataset_val = dataset_val
+        self.out_channels = out_channels
         if optim_kwargs is None:
             self.optim_kwargs = load_kwargs(folder_config=dataset_train.folder_config, kwargs='optim_kwargs')
         else:
             self.optim_kwargs = optim_kwargs
         self.num_epochs = kwargs.get('num_epochs', 200)
-        self.conv_class = kwargs.get('conv_class', GATv2Conv)
+        self.conv_class = kwargs.get('conv_class', GATConv)
         self.is_optimized = False
-        log_dir = './logs'
-        os.makedirs(log_dir, exist_ok=True)
-        filename = os.path.join(log_dir, f'optimization_{str(datetime.date.today())}.log')
-        logging.basicConfig(filename=filename, level='INFO')
-        self.logger = logging.getLogger()
-        handler = logging.StreamHandler(sys.stdout)
-        handler.setLevel(logging.INFO)
-        formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
-        handler.setFormatter(formatter)
-        self.logger.addHandler(handler)
-        self.logger.info('Init logger.')
-        self.logger.info(f'Optimizer is initialized for model {self.model_class.__name__}.')
 
     def _run_epoch(self, optimizer, mode: str, loader: PyGDataLoader) -> float:
         """
@@ -137,39 +121,76 @@ class Optimizer():
                 return total_loss / count, optimizer
             else:
                 return 0, optimizer
+            
+    def _build_model_tag(self, hp, batch_size):
+        """
+        Build checkpoint tag from sampled hyperparameters (except lr, batch_size, adj_matrix).
+        """
+        if not isinstance(hp, dict):
+            raise TypeError(f"_build_model_tag expects a dict, got {type(hp)}")
+
+        skip = {"lr", "batch_size", "adj_matrix"}
+        parts = [f"batch{batch_size}"]
+
+        for key, val in hp.items():
+            if key not in skip:
+                parts.append(f"{key}{val}")
+
+        return "_".join(parts)
+
 
     def _define_model(self, trial):
         """
         Build a model instance for a given Optuna trial.
 
-        Parameters
-        ----------
-        trial : optuna.trial.Trial
-            Current trial from which hyperparameters are sampled.
-
-        Returns
-        -------
-        torch.nn.Module
-            Initialized model with trial-specific parameters.
+        Supports both:
+        - Classic GNNs: model(in_channels, hidden_channels, num_layers, ...)
+        - AdditiveGraphModel: model(feature_group_dims, hidden_channels, gnn_layers, ...)
         """
-        vars = {}
-        for (param, (vmin, vmax)) in zip(self.optim_kwargs.keys(), self.optim_kwargs.values()):
-            if param != 'batch_size':
-                if isinstance(vmin, int):
-                    vars[param] = trial.suggest_int(param, vmin, vmax)
-                elif isinstance(vmin, float):
-                    if param != 'lr':
-                        vars[param] = trial.suggest_float(param, vmin, vmax, log=False)
-                    else:
-                        vars[param] = trial.suggest_float(param, vmin, vmax, log=True)
-                        self.lr = vars[param]
+        sampled = {}
+        for param, (vmin, vmax) in self.optim_kwargs.items():
+            if param == "batch_size":
+                continue   
+            if isinstance(vmin, int):
+                sampled[param] = trial.suggest_int(param, vmin, vmax)
+            elif isinstance(vmin, float):
+                if param == "lr":
+                    sampled[param] = trial.suggest_float(param, vmin, vmax, log=True)
+                    self.lr = sampled[param]
                 else:
-                    # trial.suggest_categorical(param, categories)
-                    print(param, vmin, vmax, type(vmin))
-                    raise NotImplementedError()
+                    sampled[param] = trial.suggest_float(param, vmin, vmax, log=False)
             else:
-                pass   
-        model = self.model_class(in_channels=self.dataset_val.num_node_features, conv_class=self.conv_class, conv_kwargs=vars, out_channels=48, **vars)
+                raise NotImplementedError(
+                    f"[Optimizer] Unsupported type for param {param}: {type(vmin)}"
+                )
+        is_additive = self.model_class.__name__ == "AdditiveGraphModel"
+        if is_additive:
+            feature_group_dims = self.dataset_train.feature_group_dims
+            if feature_group_dims is None:
+                raise RuntimeError(
+                    "[Optimizer] feature_group_dims is required for AdditiveGraphModel.\n"
+                    "Set dataset_kwargs['feature_groups']=... in GraphDataset."
+                )
+
+            gnn_layers = sampled.get("num_layers") or sampled.get("gnn_layers")
+
+            model = self.model_class(
+                feature_group_dims=feature_group_dims,
+                gnn_layers=gnn_layers,
+                out_channels=self.out_channels,
+                conv_class=self.conv_class,
+                conv_kwargs=sampled,
+            )
+
+        else:
+            model = self.model_class(
+                in_channels=self.dataset_val.num_node_features,
+                out_channels=self.out_channels,
+                conv_class=self.conv_class,
+                conv_kwargs=sampled,
+                **sampled
+            )
+
         return model
     
     def _objective(self, trial):
@@ -198,9 +219,11 @@ class Optimizer():
         adj_matrix = trial.suggest_categorical('adj_matrix', os.listdir(self.dataset_train.graph_folder))
         self.dataset_train._set_adj_matrix(adj_matrix=adj_matrix)
         self.dataset_val._set_adj_matrix(adj_matrix=adj_matrix)
-        saving_directory = f'./checkpoints_optim/{self.model.__class__.__name__}{self.model.heads}_{self.dataset_train.adj_matrix}/batch{batch_size}_hidden{self.model.hidden_channels}_layers{self.model.num_layers}_epochs{self.num_epochs}'
-
+        tag = self._build_model_tag(trial.params, batch_size)
+        mname = self.model.__class__.__name__
+        saving_directory = f"./checkpoints_optim/{mname}/{adj_matrix}/{tag}"
         os.makedirs(saving_directory, exist_ok=True)
+
         train_loader = PyGDataLoader(self.dataset_train, batch_size=batch_size, shuffle=True)
         val_loader = PyGDataLoader(self.dataset_val, batch_size=batch_size, shuffle=False)
         train_losses = []
@@ -252,9 +275,7 @@ class Optimizer():
         self.study = optuna.create_study(storage=self.storage,
                                          study_name=kwargs.get('study_name', f'{self.model_class.__name__}_hpo'),
                                          direction=kwargs.get('direction', 'minimize'))
-        self.logger.info('Optimization began.')
         self.study.optimize(self._objective, n_trials=kwargs.get('n_trials', 100), timeout=kwargs.get('timeout', 10000))
-        self.logger.info('Optimization finished.')
         self.pruned_trials = self.study.get_trials(deepcopy=False, states=[optuna.trial.TrialState.PRUNED])
         self.complete_trials = self.study.get_trials(deepcopy=False, states=[optuna.trial.TrialState.COMPLETE])
 
@@ -272,9 +293,13 @@ class Optimizer():
         for key, value in trial.params.items():
             print("    {}: {}".format(key, value))
 
-        result_dir = f'./results_optim_{self.conv_class.__name__}'
-        result_file = os.path.join(result_dir, f'results_{self.model_class.__name__}.txt')
+        result_dir = f"./results_optim/{self.conv_class.__name__}"
         os.makedirs(result_dir, exist_ok=True)
+
+        result_file = os.path.join(
+            result_dir,
+            f"{self.model_class.__name__}.txt"
+        )
 
         with open(result_file, 'a') as f:
             f.write("Study statistics:\n")
