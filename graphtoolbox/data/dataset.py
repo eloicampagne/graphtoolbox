@@ -457,7 +457,6 @@ class GraphBuilder:
             else:
                 raise NotImplementedError(f"Reduction method {self.reduce_method} not implemented.")
         return reduced_signal
-
     
 class GraphDataset:
     """
@@ -500,6 +499,8 @@ class GraphDataset:
         Subset of data corresponding to the specified period.
     features_base : list of str
         List of input feature column names.
+    feature_groups : dict or None
+        Optional mapping of feature groups for grouped GNN inputs.
     target_base : str
         Name of the prediction target column.
     X_scaled : torch.Tensor
@@ -563,6 +564,7 @@ class GraphDataset:
             for dummy in self.data_kwargs['dummies']:
                 self.features_base += self.dataframe.filter(regex=f'{dummy}_').columns.tolist()
 
+        self.feature_groups = dataset_kwargs.get('feature_groups', None)
         self.target_base = self.dataset_kwargs['target_base']
 
         self.scalers_feat = scalers_feat
@@ -767,46 +769,126 @@ class GraphDataset:
             return dense_to_sparse(torch.eye(self.num_nodes))
         A = torch.tensor(np.loadtxt(adj_path, delimiter=' ', usecols=range(self.num_nodes)))
         return dense_to_sparse(A)
+    
+    def _infer_group_dims(self):
+        """
+        Compute feature_group_dims = {group_name: num_features_in_group}.
+        Called after _set_features() and before model creation.
+        """
+
+        if not self.feature_groups:
+            self.feature_group_dims = None
+            return
+
+        feature_group_dims = {}
+
+        for group_name, feature_names in self.feature_groups.items():
+            count = 0
+
+            for name in feature_names:
+                # Exact feature match
+                if name in self.features_base:
+                    count += 1
+                    continue
+
+                # Dummy encoding expansion
+                matched = [f for f in self.features_base if f.startswith(name + "_")]
+                count += len(matched)
+
+            if count == 0:
+                raise KeyError(
+                    f"[GraphDataset] Group '{group_name}' matched 0 features "
+                    f"(check feature names or dummy expansion)."
+                )
+
+            feature_group_dims[group_name] = count
+
+        self.feature_group_dims = feature_group_dims
 
     def _prepare_graph_data(self):
         """
-        Prepare graph snapshots (`torch_geometric.data.Data`) for each time step.
+        Prepare graph snapshots (PyG Data) for each time step.
 
-        Builds a list of graphs with:
-        - node features (x),
-        - scaled and raw targets (y_scaled, y),
-        - masks for missing values,
-        - shared `edge_index` and `edge_weight`.
+        If feature_groups is provided:
+            - builds Data.<group_name> for each group
+            - still includes Data.x (all features)
+
+        Otherwise:
+            - same behavior as original.
         """
+
         T = self.X_scaled.shape[1]
-        x_all, y_all, y_all_classic = self.X_scaled, self.Y_scaled, self.Y_node
+        X_all = self.X_scaled
+        Y_scaled = self.Y_scaled
+        Y_raw = self.Y_node
         edge_index, edge_weight = self.edge_index, self.edge_weight
 
+        group_index_map = {}
+        if self.feature_groups:
+            for group_name, feature_names in self.feature_groups.items():
+                idxs = []
+
+                for name in feature_names:
+
+                    # Exact match
+                    if name in self.features_base:
+                        idxs.append(self.features_base.index(name))
+                        continue
+
+                    # Prefix match for dummies
+                    matched = [i for i, f in enumerate(self.features_base)
+                            if f.startswith(name + "_")]
+                    if matched:
+                        idxs.extend(matched)
+                        continue
+
+                    raise KeyError(
+                        f"[GraphDataset] Feature '{name}' in group '{group_name}' "
+                        f"not found among features_base."
+                    )
+
+                group_index_map[group_name] = idxs
+
         self.pyg_data = []
-        for i in range(0, T, self.out_channels):
-            start = i
-            end = min(i + self.out_channels, T)
-            x_i = x_all[:, start]
-            y_i = y_all[:, start:end]
-            y_classic_i = y_all_classic[:, start:end]
 
-            mask_x = (~torch.isnan(x_i)).float()
-            mask_y = (~torch.isnan(y_i)).float()
+        for t in range(0, T, self.out_channels):
+            start, end = t, min(t + self.out_channels, T)
 
-            x_i = torch.nan_to_num(x_i, nan=0)
-            y_i = torch.nan_to_num(y_i, nan=0)
-            y_classic_i = torch.nan_to_num(y_classic_i, nan=0)
+            x_t = X_all[:, start]            # [N, F]
+            y_t = Y_scaled[:, start:end]     # [N, out_channels]
+            y_raw_t = Y_raw[:, start:end]
 
-            data = Data(
-                x=x_i,
-                y_scaled=y_i,
-                y=y_classic_i,
-                edge_index=edge_index,
-                edge_weight=edge_weight,
-                mask_X=mask_x,
-                mask_y=mask_y
-            )
+            mask_x = (~torch.isnan(x_t)).float()
+            mask_y = (~torch.isnan(y_t)).float()
+
+            x_t = torch.nan_to_num(x_t, nan=0)
+            y_t = torch.nan_to_num(y_t, nan=0)
+            y_raw_t = torch.nan_to_num(y_raw_t, nan=0)
+
+            data_kwargs = {
+                "edge_index": edge_index,
+                "edge_weight": edge_weight,
+                "mask_X": mask_x,
+                "mask_y": mask_y,
+                "y_scaled": y_t,
+                "y": y_raw_t,
+            }
+
+            if not self.feature_groups:
+                data_kwargs["x"] = x_t
+                self.pyg_data.append(Data(**data_kwargs))
+                continue
+
+            data_kwargs["x"] = x_t          # full features for convenience
+            data_kwargs["all"] = x_t        # identical alias
+
+            # Add group-specific feature subsets
+            for group_name, idxs in group_index_map.items():
+                data_kwargs[group_name] = x_t[:, idxs]
+
+            data = Data(**data_kwargs)
             self.pyg_data.append(data)
+            self._infer_group_dims()
 
     def _set_adj_matrix(self, adj_matrix):
         """
