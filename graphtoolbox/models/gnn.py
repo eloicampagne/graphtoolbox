@@ -291,24 +291,55 @@ class myGNN(nn.Module):
         return (x, attentions) if return_attention else x
     
 class AdditiveGraphModel(nn.Module):
+    r"""
+    Additive Graph Model (GAM-like GNN).
+
+    This model builds per-feature-group encoders and then applies one shared GNN
+    backbone over a block-diagonal expansion of the original graph (one disjoint
+    copy per feature group). The final per-node prediction is the average of
+    group-wise outputs plus a learnable bias.
+
+    Mathematical form
+    -----------------
+    :math:`h_g = \mathrm{Encoder}_g(x_g)`, :math:`y_g = \mathrm{GNN}(h_g, \mathcal{G})`,
+    :math:`\hat{y} = b + \frac{1}{|G|} \sum_{g \in G} y_g`.
+
+    Key points
+    ----------
+    - Single shared backbone over disjoint copies improves stability.
+    - Avoids repeated backbone calls (prevents exploding activations).
+    - Provides additive interpretability via ``group_outputs``.
+
+    Parameters
+    ----------
+    feature_group_dims : dict[str, int]
+        Mapping group name -> input feature dimension.
+    num_layers : int
+        Number of GNN layers in the shared backbone.
+    hidden_channels : int
+        Hidden dimension used by encoders and backbone.
+    out_channels : int
+        Output dimension per node.
+    conv_class : type, optional
+        PyG convolution class (default: ``GCNConv``).
+    conv_kwargs : dict, optional
+        Extra keyword arguments forwarded to the convolution constructor.
+
+    Attributes
+    ----------
+    group_names : list[str]
+        Ordered list of feature group names.
+    num_groups : int
+        Number of feature groups.
+    encoders : nn.ModuleDict
+        Per-group MLP encoders producing hidden representations.
+    gnn_branch : myGNN
+        Shared GNN backbone applied to concatenated group embeddings.
+    bias : torch.nn.Parameter
+        Learnable scalar bias added to predictions.
+    group_index_map : dict[str, slice]
+        Slices locating each group inside the concatenated feature tensor.
     """
-    Additive Graph Model (GAM-like GNN):
-
-        For feature groups g in G:
-
-            h_g = Encoder_g(x_g)         # local, group-specific MLP
-            y_g = GNN(h_g, G)            # shared graph backbone, scalar/vector per node
-
-        Final prediction per node:
-            y_hat = bias + (1/|G|) * sum_g y_g
-
-    Implementation details:
-    - For stability, we run ONE shared GNN pass over a block-diagonal
-      graph containing one copy of the original graph per feature group.
-    - This avoids repeated GNN calls that were causing exploding activations
-      and infinite MSE.
-    """
-
     def __init__(
         self,
         feature_group_dims: dict,
@@ -362,8 +393,20 @@ class AdditiveGraphModel(nn.Module):
     @staticmethod
     def _repeat_edge_index(edge_index: torch.Tensor, num_nodes: int, repeats: int, device=None):
         """
-        Build a block-diagonal edge_index with `repeats` disjoint copies
-        of the same graph (each shifted by k * num_nodes).
+        Create a block-diagonal edge_index with ``repeats`` disjoint copies of the graph.
+
+        Each copy is shifted by ``k * num_nodes`` in node indices.
+
+        :param edge_index: Base edge index [2, E].
+        :type edge_index: torch.Tensor
+        :param num_nodes: Number of nodes in the original graph.
+        :type num_nodes: int
+        :param repeats: Number of disjoint copies.
+        :type repeats: int
+        :param device: Optional device for the output tensor.
+        :type device: torch.device | str | None
+        :returns: Expanded edge index [2, repeats * E].
+        :rtype: torch.Tensor
         """
         if edge_index is None:
             return None
@@ -384,6 +427,18 @@ class AdditiveGraphModel(nn.Module):
 
     @staticmethod
     def _repeat_edge_weight(edge_weight: torch.Tensor, repeats: int, device=None):
+        """
+        Repeat edge weights for block-diagonal expansion.
+
+        :param edge_weight: Edge weights [E].
+        :type edge_weight: torch.Tensor
+        :param repeats: Number of repetitions.
+        :type repeats: int
+        :param device: Optional device.
+        :type device: torch.device | str | None
+        :returns: Concatenated edge weights [repeats * E] or None.
+        :rtype: torch.Tensor | None
+        """
         if edge_weight is None:
             return None
         edge_weight = edge_weight.to(device)
@@ -400,31 +455,29 @@ class AdditiveGraphModel(nn.Module):
         **kwargs
     ):
         """
-        Parameters
-        ----------
-        x : Tensor [N, F]
-            Node features; columns ordered as concatenation of feature groups.
-        edge_index : LongTensor [2, E]
-            Graph connectivity.
-        edge_weight : Optional[Tensor [E]]
-        mask : unused (kept for Trainer API compatibility)
-        return_attention : bool
-            If True, uses the slower, per-group path (old behavior).
-        return_group_outputs : bool
-            If True, also returns a dict of per-group node-wise contributions.
-        batch : Optional[LongTensor [N]]
-            Unused here; each snapshot is a single graph.
+        Forward pass.
 
-        Returns
-        -------
-        - If return_attention == False and return_group_outputs == False:
-            y_hat : Tensor [N, out_channels]
+        Fast path (``return_attention=False``) constructs a block-diagonal graph and
+        performs one shared GNN pass. Slow path (``return_attention=True``) iterates
+        per group to collect attention maps.
 
-        - If return_group_outputs == True:
-            y_hat, group_outputs
-
-        - If return_attention == True:
-            y_hat, group_outputs, attention_per_group  (slow path)
+        :param x: Node features concatenated by group, shape [N, F_total].
+        :type x: torch.Tensor
+        :param edge_index: Graph connectivity [2, E].
+        :type edge_index: torch.Tensor
+        :param edge_weight: Optional edge weights [E].
+        :type edge_weight: torch.Tensor | None
+        :param mask: Unused placeholder (trainer compatibility).
+        :type mask: Any | None
+        :param return_attention: If True, returns per-group attention statistics.
+        :type return_attention: bool
+        :param return_group_outputs: If True, also return per-group node outputs.
+        :type return_group_outputs: bool
+        :returns:
+            - y_hat: Tensor [N, out_channels] (always)
+            - group_outputs (dict[str, Tensor]) if ``return_group_outputs`` is True
+            - attention_per_group (dict[str, dict]) if ``return_attention`` is True
+        :rtype: torch.Tensor | tuple
         """
         device = self.bias.device
 
