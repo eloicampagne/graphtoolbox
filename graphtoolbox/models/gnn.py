@@ -294,18 +294,19 @@ class AdditiveGraphModel(nn.Module):
     """
     Additive Graph Model (GAM-like GNN):
 
-    For feature groups g in G:
+        For feature groups g in G:
 
-        h_g = Encoder_g(x_g)     # local, group-specific MLP
-        y_g = GNN(h_g, G)        # shared graph backbone (myGNN), scalar per node
+            h_g = Encoder_g(x_g)         # local, group-specific MLP
+            y_g = GNN(h_g, G)            # shared graph backbone, scalar/vector per node
 
-    Final prediction per node:
+        Final prediction per node:
+            y_hat = bias + (1/|G|) * sum_g y_g
 
-        y_hat = bias + sum_g y_g
-
-    This is *strictly additive* in the feature groups: no cross-group
-    mixing happens inside the network; groups only interact via the
-    final summation.
+    Implementation details:
+    - For stability, we run ONE shared GNN pass over a block-diagonal
+      graph containing one copy of the original graph per feature group.
+    - This avoids repeated GNN calls that were causing exploding activations
+      and infinite MSE.
     """
 
     def __init__(
@@ -316,7 +317,7 @@ class AdditiveGraphModel(nn.Module):
         out_channels: int,
         conv_class=None,
         conv_kwargs=None,
-        **kwargs
+        **kwargs,
     ):
         super().__init__()
 
@@ -328,8 +329,9 @@ class AdditiveGraphModel(nn.Module):
         self.hidden_channels = hidden_channels
         self.num_layers = num_layers
         self.out_channels = out_channels
-        self.heads = conv_kwargs.get('heads', 1)
+        self.heads = conv_kwargs.get("heads", 1)
         self.group_names = list(feature_group_dims.keys())
+        self.num_groups = len(self.group_names)
 
         self.encoders = nn.ModuleDict()
         for gname, dim in feature_group_dims.items():
@@ -357,6 +359,36 @@ class AdditiveGraphModel(nn.Module):
             self.group_index_map[gname] = slice(offset, offset + dim)
             offset += dim
 
+    @staticmethod
+    def _repeat_edge_index(edge_index: torch.Tensor, num_nodes: int, repeats: int, device=None):
+        """
+        Build a block-diagonal edge_index with `repeats` disjoint copies
+        of the same graph (each shifted by k * num_nodes).
+        """
+        if edge_index is None:
+            return None
+
+        edge_index = edge_index.to(device)
+        row, col = edge_index
+        all_rows = []
+        all_cols = []
+
+        for k in range(repeats):
+            offset = k * num_nodes
+            all_rows.append(row + offset)
+            all_cols.append(col + offset)
+
+        row_big = torch.cat(all_rows, dim=0)
+        col_big = torch.cat(all_cols, dim=0)
+        return torch.stack([row_big, col_big], dim=0)
+
+    @staticmethod
+    def _repeat_edge_weight(edge_weight: torch.Tensor, repeats: int, device=None):
+        if edge_weight is None:
+            return None
+        edge_weight = edge_weight.to(device)
+        return edge_weight.repeat(repeats)
+
     def forward(
         self,
         x,
@@ -365,7 +397,7 @@ class AdditiveGraphModel(nn.Module):
         mask=None,  # kept for API compatibility, unused
         return_attention: bool = False,
         return_group_outputs: bool = False,
-        batch=None,
+        **kwargs
     ):
         """
         Parameters
@@ -377,23 +409,22 @@ class AdditiveGraphModel(nn.Module):
         edge_weight : Optional[Tensor [E]]
         mask : unused (kept for Trainer API compatibility)
         return_attention : bool
-            If True, returns per-group attention statistics from the shared GNN
-            (where supported by conv_class).
+            If True, uses the slower, per-group path (old behavior).
         return_group_outputs : bool
             If True, also returns a dict of per-group node-wise contributions.
         batch : Optional[LongTensor [N]]
-            Batch vector for multiple graphs in a minibatch.
+            Unused here; each snapshot is a single graph.
 
         Returns
         -------
-        If return_attention == False and return_group_outputs == False:
-            y_hat : Tensor [N, out_channels]   (usually [N, 1])
+        - If return_attention == False and return_group_outputs == False:
+            y_hat : Tensor [N, out_channels]
 
-        If return_group_outputs == True:
+        - If return_group_outputs == True:
             y_hat, group_outputs
 
-        If return_attention == True:
-            y_hat, group_outputs, attention_per_group
+        - If return_attention == True:
+            y_hat, group_outputs, attention_per_group  (slow path)
         """
         device = self.bias.device
 
@@ -402,55 +433,84 @@ class AdditiveGraphModel(nn.Module):
             edge_index = edge_index.to(device)
         if edge_weight is not None:
             edge_weight = edge_weight.to(device)
-        if batch is not None:
-            batch = batch.to(device)
 
         N = x.size(0)
+        G = self.num_groups
 
-        total = torch.zeros(N, 1, device=device)
+        # Fast, stable path: no attention requested
+        if not return_attention:
+            h_list = []
+            for gname in self.group_names:
+                sl = self.group_index_map[gname]
+                x_g = x[:, sl]  # [N, d_g]
+                if x_g.dim() == 1:
+                    x_g = x_g.unsqueeze(-1)
+                h_g = self.encoders[gname](x_g)  # [N, hidden]
+                h_list.append(h_g)
 
-        group_outputs = {}  # gname -> [N, 1]
-        attention_per_group = {}  # gname -> attention dict from myGNN
+            H = torch.stack(h_list, dim=0)           # [G, N, hidden]
+            H_flat = H.reshape(G * N, self.hidden_channels)
+            edge_index_big = self._repeat_edge_index(edge_index, num_nodes=N, repeats=G, device=device)
+            edge_weight_big = self._repeat_edge_weight(edge_weight, repeats=G, device=device)
+
+            y_flat = self.gnn_branch(
+                H_flat,
+                edge_index_big,
+                edge_weight=edge_weight_big,
+                return_attention=False,
+            )  # [G*N, out_channels]
+
+            if y_flat.dim() == 1:
+                y_flat = y_flat.unsqueeze(-1)
+            Y = y_flat.view(G, N, self.out_channels)
+
+            group_outputs = {
+                gname: Y[i] for i, gname in enumerate(self.group_names)
+            }  # gname -> [N, out_channels]
+
+            total = Y.sum(dim=0) / float(G)  # [N, out_channels]
+            y_hat = total + self.bias        # [N, out_channels] (broadcast)
+
+            if not return_group_outputs:
+                return y_hat
+            else:
+                return y_hat, group_outputs
+
+        # Slow, per-group path: needed if return_attention == True.
+        total = torch.zeros(N, self.out_channels, device=device)
+        group_outputs = {}
+        attention_per_group = {}
 
         for gname, sl in self.group_index_map.items():
             x_g = x[:, sl]  # [N, d_g]
-
             if x_g.dim() == 1:
                 x_g = x_g.unsqueeze(-1)
+            h_g = self.encoders[gname](x_g)  # [N, hidden]
 
-            h_g = self.encoders[gname](x_g)  # [N, hidden_channels]
-
-            if return_attention:
-                y_g, attn_g = self.gnn_branch(
-                    h_g,
-                    edge_index,
-                    edge_weight=edge_weight,
-                    return_attention=True,
-                )
-                attention_per_group[gname] = attn_g
-            else:
-                y_g = self.gnn_branch(
-                    h_g,
-                    edge_index,
-                    edge_weight=edge_weight,
-                    return_attention=False,
-                )
+            y_g, attn_g = self.gnn_branch(
+                h_g,
+                edge_index,
+                edge_weight=edge_weight,
+                return_attention=True,
+            )
 
             if y_g.dim() == 1:
                 y_g = y_g.unsqueeze(-1)
 
-            group_outputs[gname] = y_g  # store raw contribution
-            total = total + y_g  # additive aggregation
+            group_outputs[gname] = y_g
+            attention_per_group[gname] = attn_g
+            total = total + y_g
+            
+        y_hat = total + self.bias
 
-        y_hat = total + self.bias  # [N, out_channels] with broadcasting
-        
         if not return_group_outputs and not return_attention:
             return y_hat
+        if not return_group_outputs and return_attention:
+            return y_hat, attention_per_group
         if return_attention and not return_group_outputs:
-            return y_hat, group_outputs, attention_per_group
+            return y_hat, attention_per_group
         if return_attention and return_group_outputs:
             return y_hat, group_outputs, attention_per_group
-        return y_hat
             
 class GCNEncoder(torch.nn.Module):
     """
