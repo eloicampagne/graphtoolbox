@@ -15,11 +15,20 @@ release = '0.1.0'
 # -- General configuration ---------------------------------------------------
 extensions = [
     "sphinx.ext.autodoc",
-    "sphinx.ext.napoleon",   # docstrings Google/Numpy
-    "sphinx.ext.viewcode",   # liens internes vers le code
-    "sphinx.ext.linkcode",   # liens externes vers GitHub
-    "myst_parser",           # lecture des fichiers .md
+    "sphinx.ext.autosummary",
+    "sphinx.ext.napoleon",
+    "sphinx.ext.viewcode",
+    "sphinx.ext.linkcode",
+    "myst_parser",
 ]
+
+autosummary_generate = True
+autodoc_default_options = {
+    'members': True,
+    'undoc-members': True,
+    'show-inheritance': True,
+}
+
 
 templates_path = ['_templates']
 exclude_patterns = []
@@ -97,4 +106,5 @@ def linkcode_resolve(domain, info):
 
 def setup(app):
     # Pour un fichier local
-    app.add_css_file("styles.css")
+    # app.add_css_file("styles.css")
+    pass

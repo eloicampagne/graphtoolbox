@@ -116,17 +116,11 @@ License
 This project is licensed under the GPL License — see the ``LICENSE`` file for details.
 
 
-Contents
---------
+Documentation
+-------------
 
-.. toctree::
-   :maxdepth: 2
-   :caption: API Reference
+.. autosummary::
+   :toctree: _autosummary
+   :recursive:
 
-   modules
-
-Indices and tables
-==================
-
-* :ref:`genindex`
-* :ref:`modindex`
+   graphtoolbox
