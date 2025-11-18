@@ -8,9 +8,7 @@ from torch_geometric.loader import DataLoader as PyGDataLoader
 from tqdm import tqdm
 from typing import List, Tuple, Union
 
-# Set device to 'cuda' if available, 'mps' if on MACOS, else 'cpu'
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
-
 class EarlyStopping:
     """
     Implements early stopping to terminate training when validation loss stops improving.
@@ -72,6 +70,8 @@ class Trainer:
     - batched training with PyTorch Geometric loaders,
     - validation and early stopping,
     - checkpointing and loss tracking,
+    - optional attention collection and saving,
+    - optional per-group outputs for additive models (sum to final prediction),
     - inference and hierarchical reconciliation (MinT).
 
     Parameters
@@ -91,11 +91,12 @@ class Trainer:
     reconcile : bool, default=True
         Whether to apply MinT reconciliation to predictions.
     **kwargs :
-        Optional arguments:
-            - edge_index (torch.Tensor)
-            - edge_weight (torch.Tensor)
-            - return_attention (bool)
-            - lam_reg (float): regularization weight.
+        Optional keyword-only arguments:
+            - edge_index (torch.Tensor[2, E])
+            - edge_weight (torch.Tensor[E]) or None
+            - return_attention (bool): collect attention during validation/test.
+            - return_group_outputs (bool): ask additive models to return group-wise contributions.
+            - lam_reg (float): graph smoothness regularizer weight (pairwise node prediction L2).
 
     Attributes
     ----------
@@ -107,6 +108,15 @@ class Trainer:
         Path to saved model checkpoints.
     S, G, P : torch.Tensor
         Matrices for hierarchical MinT reconciliation.
+    nodes : list[str]
+        Node names (order used by the model).
+    num_nodes : int
+        Number of base nodes.
+
+    Notes
+    -----
+    When the model class name is 'AdditiveGraphModel' and return_group_outputs is not set,
+    Trainer will auto-enable group output collection.
     """
     def __init__(self, model, dataset_train, dataset_val, dataset_test, batch_size,
                  model_kwargs: Optional[Dict] = None, reconcile: bool = True,
@@ -114,7 +124,9 @@ class Trainer:
         self.edge_index = kwargs.get('edge_index', None)
         self.edge_weight = kwargs.get('edge_weight', None)
         self.return_attention = kwargs.get('return_attention', False)
+        self.return_group_outputs = kwargs.get('return_group_outputs', False)
         self.lam_reg = kwargs.get('lam_reg', 0)
+        
         self.model = model.to(DEVICE)
         self.dataset_train = dataset_train
         self.dataset_val = dataset_val
@@ -142,11 +154,12 @@ class Trainer:
         self._build_summing_matrix()
         self._compute_min_trace_projection()
 
-    def train(self, **kwargs) -> Tuple[np.ndarray, torch.Tensor]:
+    def train(self, **kwargs) -> Tuple:
         """
         Train the model and optionally evaluate during training.
 
-        Supports early stopping, checkpoint saving, and attention visualization.
+        Supports early stopping, checkpoint saving, attention visualization and
+        (for additive models) returning per-group outputs.
 
         Parameters
         ----------
@@ -171,14 +184,26 @@ class Trainer:
 
         Returns
         -------
-        preds : np.ndarray
-            Rescaled model predictions on the test set.
-        targets : torch.Tensor
-            Ground-truth values.
-        edge_index : torch.Tensor
-            Graph connectivity.
-        Lattention_mat or edge_weight : torch.Tensor
-            Attention matrices (if applicable).
+        Tuple
+            If return_attention is False and return_group_outputs is False:
+                (preds, targets, edge_index, edge_weight)
+            If return_attention is True:
+                (preds, targets, edge_index, attention_mats)
+            If return_group_outputs is True and return_attention is False:
+                (preds, targets, edge_index, edge_weight, group_outputs)
+            If both are True:
+                (preds, targets, edge_index, attention_mats, group_outputs)
+
+            Where:
+            - preds : torch.Tensor[num_nodes, T] in original units (reconciled if enabled)
+            - targets : torch.Tensor[num_nodes, T] in original units
+            - attention_mats : dict[str, list[torch.Tensor]] if collected
+            - group_outputs : dict[str, torch.Tensor[num_nodes, T]] if collected
+        
+        Notes
+        -----
+        - Applies graph smoothness regularization weighted by lam_reg.
+        - Uses early stopping with best-checkpoint saving.
         """
         self.num_epochs = kwargs.get('num_epochs', self.model_kwargs['num_epochs'])
         optimizer = kwargs.get('optimizer', torch.optim.Adam(self.model.parameters(), lr=self.model_kwargs['lr']))
@@ -187,6 +212,10 @@ class Trainer:
         min_delta = kwargs.get('min_delta', 0.0)
         self.dynamic_graph = kwargs.get('dynamic_graph', False)
         save = kwargs.get('save', False)
+
+        # Auto-enable group outputs for additive model if not explicitly set
+        if (self.model.__class__.__name__ == 'AdditiveGraphModel') and not getattr(self, 'return_group_outputs', False):
+            self.return_group_outputs = True
         
         early_stopping = EarlyStopping(patience=patience, min_delta=min_delta)
 
@@ -254,12 +283,20 @@ class Trainer:
             _ = self._run_epoch(optimizer, 'eval', self.test_loader, return_attention=self.return_attention, save=True, dataset_name='test')
 
         _, preds, targets = self._predict(self.test_loader)
+        output_groups = getattr(self, 'group_outputs_test', None) if self.return_group_outputs else None
+
         self.is_trained = True
-        if self.return_attention :
+        if self.return_attention:
             self.return_attention = False
-            return (preds, targets, self.edge_index, Lattention_mat) 
+            if self.return_group_outputs:
+                return (preds, targets, self.edge_index, Lattention_mat, output_groups)
+            else:
+                return (preds, targets, self.edge_index, Lattention_mat)
         else:
-            return (preds, targets, self.edge_index, self.edge_weight)
+            if self.return_group_outputs:
+                return (preds, targets, self.edge_index, self.edge_weight, output_groups)
+            else:
+                return (preds, targets, self.edge_index, self.edge_weight)
 
     def _run_epoch(self, optimizer, mode: str, loader: PyGDataLoader, return_attention: bool = False, save: bool = False, dataset_name: str = 'test') -> float:
         """
@@ -282,8 +319,15 @@ class Trainer:
 
         Returns
         -------
-        float
-            Average loss for the epoch.
+        float or (float, dict)
+            - If return_attention is False: average epoch loss (float).
+            - If return_attention is True: (average loss, dict of aggregated attention).
+
+        Notes
+        -----
+        - Converts batch attributes ['x','y_scaled','y','edge_weight','mask_y'] to float32 on DEVICE.
+        - Loss = MSE over masked targets + lam_reg * graph-smoothness penalty.
+        - For additive models with attention, averages attention across batches in eval.
         """
         assert mode in ['train', 'eval']
         num_nodes = self.dataset_train.num_nodes
@@ -297,14 +341,11 @@ class Trainer:
                 os.makedirs(save_path, exist_ok=True)
             clean_dir(save_path)
 
-        # Accumulate attention only on batches with consistent size to avoid None issues
         tot_dict_attention = None
         attention_batches = 0
 
         # TODO: add dynamic graph condition
-
         for i, batch in enumerate(loader):
-            # Ensure float32 dtypes before moving to DEVICE
             for attr in ['x', 'y_scaled', 'y', 'edge_weight', 'mask_y']:
                 if getattr(batch, attr, None) is not None:
                     setattr(batch, attr, getattr(batch, attr).to(torch.float32))
@@ -313,40 +354,84 @@ class Trainer:
                 print(f"[WARN] NaN detected in batch {i}. Skipping batch.")
                 continue
 
-            if (mode == 'eval') and (return_attention): 
-                if save: 
+            if (mode == 'eval') and return_attention:
+                if save:
                     save_path = f"./attention_matrix/{self.model_name}_{self.adj_matrix}/{dataset_name}_batch{self.batch_size}_hidden{self.hidden_channels}_layers{self.num_layers}_epochs{self.num_epochs}_heads{self.heads}/num_batch{i}.pt"
-                    out, _ = self.model(batch.x, batch.edge_index, edge_weight=getattr(batch, 'edge_weight', None), mask=getattr(batch, 'mask_y', None), return_attention=True, batch_size=self.batch_size, save=True, save_path=save_path)
+                    model_out = self.model(
+                        batch.x,
+                        batch.edge_index,
+                        edge_weight=getattr(batch, 'edge_weight', None),
+                        mask=getattr(batch, 'mask_y', None),
+                        return_attention=True,
+                        return_group_outputs=self.return_group_outputs,
+                        batch_size=self.batch_size,
+                        save=True,
+                        save_path=save_path
+                    )
+                    # Forward contract:
+                    # (y_hat) or (y_hat, attention) or (y_hat, group_outputs, attention)
+                    if isinstance(model_out, tuple):
+                        out = model_out[0]
+                        attention_per_group = model_out[-1]
+                    else:
+                        out = model_out
                     out = out.squeeze().view(-1, num_nodes).T
                 else:
-                    # Only aggregate attention if batch size matches the reference batch size
-                    # to avoid None or shape-mismatch in aggregation
                     same_size = (getattr(batch, 'num_graphs', None) == self.batch_size)
                     if same_size:
-                        out, dict_attention = self.model(batch.x, batch.edge_index, edge_weight=getattr(batch, 'edge_weight', None), mask=getattr(batch, 'mask_y', None), return_attention=True, batch_size=self.batch_size)
+                        model_out = self.model(
+                            batch.x,
+                            batch.edge_index,
+                            edge_weight=getattr(batch, 'edge_weight', None),
+                            mask=getattr(batch, 'mask_y', None),
+                            return_attention=True,
+                            return_group_outputs=self.return_group_outputs,
+                            batch_size=self.batch_size
+                        )
+                        if isinstance(model_out, tuple):
+                            out = model_out[0]
+                            dict_attention = model_out[-1]  # attention_per_group
+                        else:
+                            out = model_out
+                            dict_attention = {}
                         out = out.squeeze().view(-1, num_nodes).T
 
                         if tot_dict_attention is None:
-                            # Deep copy first valid attention dict
-                            tot_dict_attention = {k: [v_i.clone() if torch.is_tensor(v_i) else v_i for v_i in v] for k, v in dict_attention.items()}
+                            tot_dict_attention = {k: [v_i.clone() if torch.is_tensor(v_i) else v_i
+                                                      for v_i in v] for k, v in dict_attention.items()}
                             attention_batches = 1
                         else:
-                            # Safe add: skip items that are None or mismatched
                             for k in tot_dict_attention.keys():
                                 for j in range(len(tot_dict_attention[k])):
                                     a = tot_dict_attention[k][j]
-                                    b = dict_attention[k][j]
+                                    b = dict_attention.get(k, [None]*len(tot_dict_attention[k]))[j]
                                     if (a is None) or (b is None):
                                         continue
                                     if torch.is_tensor(a) and torch.is_tensor(b) and a.shape == b.shape:
                                         tot_dict_attention[k][j] = a + b
                             attention_batches += 1
                     else:
-                        # Different batch size: compute outputs without attention to keep loss consistent
-                        out = self.model(batch.x, batch.edge_index, edge_weight=getattr(batch, 'edge_weight', None), mask=getattr(batch, 'mask_y', None)).squeeze().view(-1, num_nodes).T
+                        # Fallback: no attention aggregation for irregular batch size
+                        model_out = self.model(
+                            batch.x,
+                            batch.edge_index,
+                            edge_weight=getattr(batch, 'edge_weight', None),
+                            mask=getattr(batch, 'mask_y', None),
+                            return_attention=False,
+                            return_group_outputs=False
+                        )
+                        out = model_out.squeeze().view(-1, num_nodes).T
             else:
-                # TODO: add dynamic graph condition
-                out = self.model(batch.x, batch.edge_index, edge_weight=getattr(batch, 'edge_weight', None), mask=getattr(batch, 'mask_y', None)).squeeze().view(-1, num_nodes).T           
+                # Standard forward (training or eval without attention)
+                model_out = self.model(
+                    batch.x,
+                    batch.edge_index,
+                    edge_weight=getattr(batch, 'edge_weight', None),
+                    mask=getattr(batch, 'mask_y', None),
+                    return_attention=False,
+                    return_group_outputs=False
+                )
+                out = model_out.squeeze().view(-1, num_nodes).T
  
             y_s = batch.y_scaled.view(-1, num_nodes).T
             mask = batch.mask_y.view(-1, num_nodes).T  
@@ -390,25 +475,37 @@ class Trainer:
 
     def _predict(self, loader: PyGDataLoader) -> Tuple[float, torch.Tensor, torch.Tensor]:
         """
-        Run inference on a dataset and compute prediction loss.
+        Inference over a loader and compute loss against ground truth (sum over nodes).
 
         Parameters
         ----------
         loader : PyGDataLoader
-            DataLoader for evaluation.
+            DataLoader for the split to predict.
 
         Returns
         -------
         loss : float
-            RMSE between predictions and targets.
+            RMSE between summed predictions and summed targets (in original units).
         preds : torch.Tensor
-            Rescaled predictions (num_nodes × T).
+            Predictions in original units with shape [num_nodes, T]; reconciled if enabled.
         targets : torch.Tensor
-            Ground-truth targets (num_nodes × T).
+            Ground-truth targets with shape [num_nodes, T].
+
+        Side Effects
+        ------------
+        - When return_group_outputs is True, populates self.group_outputs_test as:
+          dict[group_name] -> torch.Tensor[num_nodes, T] of unscaled group contributions.
+
+        Notes
+        -----
+        - Predictions are inverse-transformed per node using dataset_train.scalers_target.
+        - **TODO:** If reconcile=True, performs MinT reconciliation and masks unavailable horizons via dataset_test.mask_Y. 
         """
         self.model.eval()
         num_nodes = self.dataset_train.num_nodes
         y_preds, y_targets = [], []
+        collect_groups = self.return_group_outputs
+        group_outputs_list = []
         with torch.no_grad():
             for batch in loader:
                 for attr in ['x', 'y_scaled', 'y', 'edge_weight', 'mask_y']:
@@ -417,21 +514,71 @@ class Trainer:
                 batch = batch.to(DEVICE)
                 if hasattr(batch, 'edge_weight') and batch.edge_weight is not None:
                     batch.edge_weight = batch.edge_weight.float()
-                out = self.model(batch.x, batch.edge_index, edge_weight=getattr(batch, 'edge_weight', None), mask=getattr(batch, 'mask_y', None))
-                y_preds.append(out)
+
+                if collect_groups:
+                    y_hat, group_outputs = self.model(
+                        batch.x,
+                        batch.edge_index,
+                        edge_weight=getattr(batch, 'edge_weight', None),
+                        mask=getattr(batch, 'mask_y', None),
+                        return_group_outputs=True,
+                        return_attention=False
+                    )
+                    group_outputs_list.append(group_outputs)
+                else:
+                    y_hat = self.model(
+                        batch.x,
+                        batch.edge_index,
+                        edge_weight=getattr(batch, 'edge_weight', None),
+                        mask=getattr(batch, 'mask_y', None),
+                        return_group_outputs=False,
+                        return_attention=False
+                    )
+
+                y_preds.append(y_hat)
                 y_targets.append(batch.y.cpu().detach())
-        y_targets = torch.hstack(y_targets) 
+        y_targets = torch.hstack(y_targets)
         y_targets = y_targets.reshape(num_nodes, -1)
-        y_preds = torch.hstack(y_preds)  
+        y_preds = torch.hstack(y_preds)
         y_preds = y_preds.reshape(num_nodes, -1)[:, :y_targets.shape[1]]
         pred_rescaled = self._rescale_predictions(y_preds).cpu().detach()
         del y_preds
         if self.reconcile:
             pred_rescaled = self._min_trace_reconciliation(preds=pred_rescaled).cpu().detach()
-            pred_rescaled = pred_rescaled[:-1] * self.dataset_test.mask_Y[:y_targets.shape[1],:y_targets.shape[1]]
+            pred_rescaled = pred_rescaled[:-1] * self.dataset_test.mask_Y[:y_targets.shape[1], :y_targets.shape[1]]
         else:
             pred_rescaled = pred_rescaled * self.dataset_test.mask_Y
-        loss = getattr(graphtoolbox.training.metrics, 'RMSE')(preds=pred_rescaled.cpu().detach().sum(dim=0), targets=y_targets.sum(dim=0)).item()
+
+        loss = getattr(graphtoolbox.training.metrics, 'RMSE')(
+            preds=pred_rescaled.cpu().detach().sum(dim=0),
+            targets=y_targets.sum(dim=0)
+        ).item()
+
+        if collect_groups:
+            group_concat = {}  # final dict[group] = [num_nodes, T_full]
+            group_names = list(group_outputs_list[0].keys())
+            for g in group_names:
+                group_concat[g] = []
+
+            for group_dict in group_outputs_list:
+                for gname, g_tensor in group_dict.items():
+                    group_concat[gname].append(g_tensor.cpu())
+
+            for gname in group_names:
+                group_concat[gname] = torch.cat(group_concat[gname], dim=1)  # [num_nodes, T]
+
+            unscaled_groups = {}
+            for gname, g_mat in group_concat.items():   # g_mat: [num_nodes, T]
+
+                g_unscaled = []
+                for node_idx, node in enumerate(self.nodes):
+                    scaler = self.dataset_train.scalers_target[node]
+                    g_np = g_mat[node_idx].reshape(-1, 1).numpy()        # [T, 1]
+                    g_unscaled_np = scaler.inverse_transform(g_np).reshape(-1)  # [T]
+                    g_unscaled.append(torch.tensor(g_unscaled_np, dtype=torch.float32))
+
+                unscaled_groups[gname] = torch.stack(g_unscaled, dim=0).to(DEVICE)  # [num_nodes, T]
+            self.group_outputs_test = unscaled_groups
         return loss, pred_rescaled, y_targets
 
     def evaluate(self, losses: Union[List[str], str] = ['mape', 'rmse']):
