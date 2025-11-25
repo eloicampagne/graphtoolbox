@@ -198,7 +198,11 @@ class DataClass:
             self.df_train = extract_dummies(df_train_, self.dummies)
             self.df_val = extract_dummies(df_val_, self.dummies)
             self.df_test = extract_dummies(df_test_, self.dummies)
-        
+        else:
+            self.df_train = df_train_
+            self.df_val = df_val_
+            self.df_test = df_test_
+            
         for df_attr in ["df_train", "df_val", "df_test"]:
             df = getattr(self, df_attr)
             num_cols = df.select_dtypes(include=["number", "bool"]).columns
