@@ -841,7 +841,7 @@ def _draw_graph_panels(model_name, dataset_name, cfg, vis_mode, panel_data, G_ba
     plt.close()
     print(f"Saved explanation grid for {model_name} ({vis_mode}, {dataset_name}) → {map_path}")
 
-def _get_group_feature_mats(group_name, data, graph_dataset_train, graph_dataset_test, expand_dummies=True):
+def get_group_feature_mats(group_name, data, graph_dataset_train, graph_dataset_test, expand_dummies=True):
     """
     Build feature matrices per node for a given group on the TEST split.
 
@@ -969,11 +969,13 @@ def compute_ALE_avg_over_instants(group_values, group_contrib, n_bins=20, period
         if np.isfinite(mu):
             ale_instants[h] = vals - mu
 
-    ale_mean = np.nanmean(ale_instants, axis=0)
-    ale_std = np.nanstd(ale_instants, axis=0)
+    # Use masked arrays to avoid warnings for bins with all-NaN across instants
+    m_arr = np.ma.array(ale_instants, mask=~np.isfinite(ale_instants))
+    ale_mean = m_arr.mean(axis=0).filled(np.nan)
+    ale_std = m_arr.std(axis=0, ddof=0).filled(np.nan)
     return x_mid, ale_mean, ale_std
 
-def plot_ALE_avg(x_mid, ale_mean, ale_std=None, label="feature", color="C0", smooth=True):
+def plot_ALE_avg(x_mid, ale_mean, ale_std=None, period=24, label="feature", color="C0", smooth=True):
     """
     Plot averaged ALE curve (and optional ±1 std band).
 
@@ -999,7 +1001,7 @@ def plot_ALE_avg(x_mid, ale_mean, ale_std=None, label="feature", color="C0", smo
                                       s=max(1e-6, 1e-4 * np.nanvar(ale_mean) * np.isfinite(ale_mean).sum()))
             x_smooth = np.linspace(float(np.nanmin(x_mid)), float(np.nanmax(x_mid)), 300)
             y_smooth = spline(x_smooth)
-            plt.plot(x_smooth, y_smooth, color=color, linestyle="--", linewidth=2, label=f"ALE {label} (avg 48 instants)")
+            plt.plot(x_smooth, y_smooth, color=color, linestyle="--", linewidth=2, label=f"ALE {label} (avg {period} instants)")
         except Exception:
             plt.plot(x_mid, ale_mean, color=color, linestyle="--", linewidth=2, marker="o", label=f"ALE {label} (avg)")
     else:
@@ -1011,8 +1013,8 @@ def plot_ALE_avg(x_mid, ale_mean, ale_std=None, label="feature", color="C0", smo
         plt.fill_between(x_mid, y_lo, y_hi, color=color, alpha=0.15, label="±1 std (across instants)")
 
     plt.xlabel(label)
-    plt.ylabel("Effect on load")
-    plt.title(f"ALE Plot (averaged over 48 instants): {label}")
+    plt.ylabel(f"Effect on target")
+    plt.title(f"ALE Plot (averaged over {period} instants): {label}")
     plt.legend()
     plt.grid(True)
     plt.show()
@@ -1270,8 +1272,9 @@ def compute_ALE_per_node_avg_over_instants(group_values, group_contrib, n_bins=2
         # Average across instants per bin without warnings (keeps NaN if no data in a bin)
         ale_nodes[i] = np.ma.array(ale_inst_i, mask=~np.isfinite(ale_inst_i)).mean(axis=0).filled(np.nan)
         counts_nodes[i] = counts_i.sum(axis=0)
+    return x_mid, ale_nodes, counts_nodes
 
-def plot_ALE_nodes(x_mid, ale_mat, counts=None, max_cols=4, smooth=True, min_points_spline=4, title_prefix="ALE", node_labels=None):
+def plot_ALE_nodes(x_mid, ale_mat, counts=None, max_cols=4, smooth=True, min_points_spline=4, title_prefix="ALE", node_labels=None, target_name='Load'):
     """
     Plot small multiples of per-node ALE curves.
 
@@ -1331,7 +1334,7 @@ def plot_ALE_nodes(x_mid, ale_mat, counts=None, max_cols=4, smooth=True, min_poi
                 ax.bar(x_mid[valid], h, bottom=0.0, width=bw * 0.85,
                        color='lightgray', alpha=0.35, align='center')
         if i % cols == 0:
-            ax.set_ylabel("Load")
+            ax.set_ylabel(f"{target_name}")
         if i >= (rows - 1) * cols:
             ax.set_xlabel("Feature value")
     for j in range(num_nodes, len(axes)):
@@ -1451,7 +1454,7 @@ def compute_feature_importances_from_ALE(group_outputs, data, graph_dataset_trai
         if group_name not in group_outputs:
             continue
         contrib = group_outputs[group_name]  # [num_nodes, T_pred]
-        feat_mats = _get_group_feature_mats(group_name, data, graph_dataset_train, graph_dataset_test)
+        feat_mats = get_group_feature_mats(group_name, data, graph_dataset_train, graph_dataset_test)
 
         # Iterate over the actually available columns (handles missing and expanded dummies)
         for feat, X in feat_mats.items():
@@ -1534,3 +1537,5 @@ def plot_feature_importance_bar(df, top_k=None, normalize='sum', figsize=None, c
     plt.grid(axis='x', alpha=0.2)
     plt.tight_layout()
     return d
+
+
