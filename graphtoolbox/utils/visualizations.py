@@ -65,28 +65,32 @@ def plot_nodes(true, pred, graph_dataset, **kwargs):
     --------
     >>> plot_nodes(true, pred, dataset_val, nrows=2, ncols=3)
     """
-    palette = sns.color_palette(cc.glasbey, n_colors=len(true))
     nrows = kwargs.get('nrows', 3)
     ncols = kwargs.get('ncols', 4)
-    figsize = kwargs.get('figsize', (7*nrows, 3*ncols))   
-    true = true.cpu().detach()
-    pred = pred.cpu().detach()
+    figsize = kwargs.get('figsize', (7*nrows, 3*ncols))
+    true = true.detach().cpu()
+    pred = pred.detach().cpu()
+    T = pred.shape[1]
+    dates_all = pd.to_datetime(graph_dataset.dataframe.date.unique())
+    dates = dates_all[-T:]
+    palette = sns.color_palette(cc.glasbey, n_colors=graph_dataset.num_nodes)
     _, axs = plt.subplots(nrows, ncols, figsize=figsize)
-    dates = pd.to_datetime(graph_dataset.dataframe.date.unique())
-    axs = axs.flatten()
+    axs = np.array(axs).flatten()
     for n in range(graph_dataset.num_nodes):
         ax = axs[n]
         try:
             ax.set_title(graph_dataset.nodes[n].replace('_', ' '))
         except:
             ax.set_title(graph_dataset.nodes[n])
-        ax.plot(dates, pred[n], label='predicted', color=palette[n])
-        ax.plot(dates, true[n], label='true', color='black', alpha=.4)
+        ax.plot(dates, pred[n].numpy(), label='predicted', color=palette[n])
+        ax.plot(dates, true[n].numpy(), label='true', color='black', alpha=.4)
         ax.tick_params(axis='x', rotation=45)
         ax.legend(loc='upper right')
+    for k in range(graph_dataset.num_nodes, len(axs)):
+        axs[k].set_visible(False)
     plt.tight_layout()
-    plt.show()
-    
+    plt.show()    
+
 def plot_graph_map(edge_index: torch.Tensor, edge_weight: torch.Tensor, df_pos: pd.DataFrame, ax):
     """
     Plot a geographic graph with nodes and weighted edges using Basemap.
