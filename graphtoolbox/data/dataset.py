@@ -1,8 +1,8 @@
 import colorama
 from datetime import timedelta
-from einops import rearrange
 from fastdtw import fastdtw
 from graphtoolbox.data.preprocessing import *
+from graphtoolbox.models.gnn import myGNN
 from graphtoolbox.training.metrics import *
 from graphtoolbox.training.trainer import Trainer
 from graphtoolbox.utils import GL_3SR
@@ -12,12 +12,12 @@ import os
 import pandas as pd
 pd.options.mode.chained_assignment = None
 from scipy.linalg import pinv
-from scipy.sparse.linalg import svds
 from scipy.spatial.distance import pdist, squareform
 from sklearn.preprocessing import MinMaxScaler
 import torch
-from torch_geometric.data import Data, Dataset, Batch
-from torch_geometric.nn.models import GCN, GraphSAGE
+from torch_geometric.data import Data
+from torch_geometric.nn.models import GCN
+from torch_geometric.nn import SAGEConv
 from torch_geometric.utils import dense_to_sparse
 from tqdm import tqdm
 from typing import List
@@ -290,7 +290,7 @@ class GraphBuilder:
         self.load_graph = kwargs.get('load_graph', False)
         self.load_signal = kwargs.get('load_signal', False)
         self.reduce_method = kwargs.get('reduce_method', 'svd')
-        self.folder_config = kwargs.get('folder_config', None)
+        self.folder_config = kwargs.get('folder_config', '.')
         if self.folder_config is not None:
             self.df_pos = load_kwargs(folder_config=self.folder_config, kwargs='df_pos')
         else:
@@ -329,7 +329,11 @@ class GraphBuilder:
             W = np.loadtxt(file)
             print(f"Loaded graph file {file}.")
         else:
-            Y = self.reduce_signal(**kwargs)
+            Y = np.asarray(self.reduce_signal(**kwargs), float)
+            bad_mask = ~np.isfinite(Y)
+            if bad_mask.any():
+                print(f"[GraphBuilder] Warning: found {bad_mask.sum()} non-finite entries in Y, setting to 0.")
+                Y = np.nan_to_num(Y, nan=0.0, posinf=0.0, neginf=0.0)
             N = self.graph_dataset_train.num_nodes
             if algo == "space":
                 threshold = kwargs.get("threshold", 0.0)
@@ -345,7 +349,12 @@ class GraphBuilder:
                 bandwidth = np.median(corr)
                 W = get_exponential_similarity(corr, bandwidth=bandwidth, threshold=0.0)
             elif algo == "precision":
-                prec = pinv(np.cov(Y))
+                cov = np.cov(Y)
+                # guard again in case cov picks up numerical issues
+                if not np.isfinite(cov).all():
+                    print("[GraphBuilder] Warning: non-finite entries in cov, nan_to_num.")
+                    cov = np.nan_to_num(cov, nan=0.0, posinf=0.0, neginf=0.0)
+                prec = pinv(cov)
                 prec = 1 - (prec - np.min(prec)) / (np.max(prec) - np.min(prec))
                 bandwidth = np.median(prec)
                 W = get_exponential_similarity(prec, bandwidth=bandwidth, threshold=0.0)
@@ -403,9 +412,30 @@ class GraphBuilder:
                     signal = self.dataframe[
                         self.dataframe[node_var_int] == r
                     ][self.graph_dataset_train.features].to_numpy()
-                    u, s, v = svds(signal, k=1, which="LM")
-                    signals.append(u)
-                reduced_signal = np.concatenate(signals, axis=1).T
+                    # signal: (T_r, F).
+                    if signal.size == 0:
+                        # no data -> use zeros
+                        F = len(self.graph_dataset_train.features)
+                        signals.append(np.zeros((1, F), dtype=float))
+                        continue
+                    node_vec = signal.mean(axis=0, keepdims=True)  # (1, F)
+                    signals.append(node_vec)
+                # shape: (num_nodes, F)
+                reduced_signal = np.concatenate(signals, axis=0)
+            elif self.reduce_method.lower() == "identity":
+                # e.g., mean over time per node-feature
+                node_var_int = f"{self.data.node_var}Int"
+                signals = []
+                for r in range(self.graph_dataset_train.num_nodes):
+                    signal = self.dataframe[
+                        self.dataframe[node_var_int] == r
+                    ][self.graph_dataset_train.features].to_numpy()
+                    if signal.size == 0:
+                        F = len(self.graph_dataset_train.features)
+                        signals.append(np.zeros((1, F), dtype=float))
+                    else:
+                        signals.append(signal.mean(axis=0, keepdims=True))
+                reduced_signal = np.concatenate(signals, axis=0)
             elif self.reduce_method.lower() == "resiter":
                 k_max = kwargs.get("k_max", 10)
                 threshold = kwargs.get("threshold", 0.71)
@@ -414,21 +444,21 @@ class GraphBuilder:
                 num_layers = kwargs.get("num_layers", 3)
                 num_epochs = kwargs.get("num_epochs", 10)
                 if model_base == "sage":
-                    gnn_base = GraphSAGE(
+                    gnn_base = myGNN(
                         in_channels=self.graph_dataset_train.num_node_features,
-                        hidden_channels=hidden_channels,
                         num_layers=num_layers,
-                        dropout=0.1,
+                        hidden_channels=hidden_channels,
                         out_channels=1,
-                        project=True,
+                        conv_class=SAGEConv,
+                        conv_kwargs={'project': True},
                     )
                 elif model_base == "gcn":
-                    gnn_base = GCN(
+                    gnn_base = myGNN(
                         in_channels=self.graph_dataset_train.num_node_features,
-                        hidden_channels=hidden_channels,
                         num_layers=num_layers,
-                        dropout=0.1,
+                        hidden_channels=hidden_channels,
                         out_channels=1,
+                        conv_class=GCN,
                     )
                 else:
                     raise NotImplementedError("Only GCN and SAGE are implemented!")
