@@ -1,3 +1,5 @@
+import copy
+from graphtoolbox.data.dataset import GraphDataset
 import graphtoolbox.training.metrics
 from graphtoolbox.utils.helper_functions import *
 from graphtoolbox.utils.visualizations import *
@@ -6,7 +8,8 @@ import os
 import torch
 from torch_geometric.loader import DataLoader as PyGDataLoader
 from tqdm import tqdm
-from typing import List, Tuple, Union
+from typing import List, Tuple, Type, Union
+
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
 class EarlyStopping:
@@ -696,3 +699,288 @@ class Trainer:
         national_pred = preds.sum(axis=0).unsqueeze(0)
         new_preds = torch.cat([preds, national_pred]).to(DEVICE)
         return self.S @ self.G @ new_preds
+    
+class RollingTrainer:
+    """
+    Warm-start rolling retraining without future leakage.
+
+    Behavior:
+    ---------
+    - Window 0:
+        TRAIN = df_train_base
+        VAL   = df_val_base
+        TEST  = first test window
+
+    - Window k >= 1:
+        TRAIN = df_train_base + test_window_{k-1}    (historical + past month)
+        VAL   = df_val_base
+        TEST  = test_window_k
+
+    - Last window:
+        If remaining timestamps < window_size, a final window is created with
+        size = remaining timestamps.
+
+    All windows warm-start from the previous model.
+    """
+
+    def __init__(
+        self,
+        dataset_train_0: "GraphDataset",
+        dataset_val_0: "GraphDataset",
+        dataset_test_full: "GraphDataset",
+        model_class: Type[torch.nn.Module],
+        model_kwargs: Dict[str, Any],
+        window_size: int,
+        step_size: int,
+        batch_size: int = 32,
+        reconcile: bool = True,
+        trainer_kwargs: Optional[Dict[str, Any]] = None,
+        num_epochs_initial: int = 50,
+        num_epochs_update: int = 5,
+    ):
+        self.ds_train_0 = dataset_train_0
+        self.ds_val_0 = dataset_val_0
+        self.ds_test_full = dataset_test_full
+
+        self.model_class = model_class
+        self.model_kwargs = model_kwargs
+        self.batch_size = batch_size
+        self.reconcile = reconcile
+        self.trainer_kwargs = trainer_kwargs or {}
+        self.num_epochs_initial = int(num_epochs_initial)
+        self.num_epochs_update = int(num_epochs_update)
+
+        self.window_size = int(window_size)
+        self.step_size = int(step_size)
+
+        # Base DataClass and splits
+        self.base_data = self.ds_train_0.data
+        self.df_train_base = self.base_data.df_train.copy()
+        self.df_val_base   = self.base_data.df_val.copy()
+        df_test_full       = self.ds_test_full.data.df_test.copy()
+
+        # Normalize all date columns to naive datetime64[ns]
+        def normalize(df: pd.DataFrame) -> pd.DataFrame:
+            df = df.copy()
+            df["date"] = pd.to_datetime(df["date"], utc=False)
+            return df
+
+        self.df_train_base = normalize(self.df_train_base)
+        self.df_val_base   = normalize(self.df_val_base)
+        self.df_test_full  = normalize(df_test_full)
+
+        # Unique test timestamps
+        self.dates = np.sort(self.df_test_full["date"].unique())
+        self.num_time = len(self.dates)
+
+        if self.window_size <= 0 or self.window_size > self.num_time:
+            raise ValueError(f"Invalid window_size={self.window_size} for num_time={self.num_time}.")
+        if self.step_size <= 0:
+            raise ValueError("step_size must be > 0.")
+
+        # Dataset config / nodes
+        self.dataset_kwargs = getattr(self.ds_train_0, "dataset_kwargs", None)
+        self.out_channels   = getattr(self.ds_train_0, "out_channels", None)
+        if self.dataset_kwargs is None or self.out_channels is None:
+            raise AttributeError("dataset_train_0 must expose dataset_kwargs and out_channels.")
+
+        self.nodes = self.ds_train_0.nodes
+        self.num_nodes = self.ds_train_0.num_nodes
+
+    def _iter_windows(self) -> List[Tuple[int, int]]:
+        """
+        Return list of (start_idx, end_idx) over self.dates.
+
+        Windows:
+          - [t, t + window_size)
+          - step_size between successive windows
+          - if trailing timestamps remain (< window_size), add a final tail window:
+                (t, num_time)
+        """
+        windows: List[Tuple[int, int]] = []
+        t = 0
+        while t + self.window_size <= self.num_time:
+            windows.append((t, t + self.window_size))
+            t += self.step_size
+
+        # Tail window: remaining timestamps if any
+        if t < self.num_time:
+            windows.append((t, self.num_time))
+
+        return windows
+
+    def _make_datasets(
+        self,
+        train_df: pd.DataFrame,
+        test_df: pd.DataFrame,
+    ) -> Tuple["GraphDataset", "GraphDataset", "GraphDataset"]:
+        """
+        Build GraphDataset(train / val / test) for this window.
+
+        - train_df : training rows for this window
+        - test_df  : test rows for this window
+        - val_df   : always df_val_base
+        """
+        DatasetCls = self.ds_train_0.__class__
+
+        data_w = copy.copy(self.base_data)
+        data_w.df_train = train_df
+        data_w.df_val   = self.df_val_base
+        data_w.df_test  = test_df
+
+        ds_train = DatasetCls(
+            data_w,
+            period="train",
+            out_channels=self.out_channels,
+            nodes=self.nodes,
+            dataset_kwargs=self.dataset_kwargs,
+        )
+
+        ds_val = DatasetCls(
+            data_w,
+            period="val",
+            scalers_feat=ds_train.scalers_feat,
+            scalers_target=ds_train.scalers_target,
+            out_channels=self.out_channels,
+            nodes=self.nodes,
+            dataset_kwargs=self.dataset_kwargs,
+        )
+
+        ds_test = DatasetCls(
+            data_w,
+            period="test",
+            scalers_feat=ds_train.scalers_feat,
+            scalers_target=ds_train.scalers_target,
+            out_channels=self.out_channels,
+            nodes=self.nodes,
+            dataset_kwargs=self.dataset_kwargs,
+        )
+
+        return ds_train, ds_val, ds_test
+
+    # -------------------------------------------------------------
+    def run(self) -> List[Dict[str, Any]]:
+        """
+        Run the rolling training + evaluation.
+
+        Returns
+        -------
+        List[Dict[str, Any]] with one entry per window:
+            {
+                "window_index": int,
+                "window_start": Timestamp,
+                "window_end":   Timestamp,
+                "preds":  Tensor[num_nodes, T_eff],
+                "targets":Tensor[num_nodes, T_eff],
+            }
+        """
+        results: List[Dict[str, Any]] = []
+        windows = self._iter_windows()
+
+        print(f"[RollingTrainer] total windows={len(windows)} "
+              f"(window_size={self.window_size}, step_size={self.step_size})")
+
+        current_model: Optional[torch.nn.Module] = None
+        previous_test_df: Optional[pd.DataFrame] = None
+
+        # Split Trainer kwargs into:
+        #  - init_kwargs: passed to Trainer(...)
+        #  - train_kwargs: passed to trainer.train(...)
+        exclude_train_keys = {
+            "num_epochs", "patience", "min_delta", "force_training",
+            "saving_directory", "plot_loss", "dynamic_graph", "save", "batch_size_save",
+        }
+        init_kwargs  = {k: v for k, v in self.trainer_kwargs.items() if k not in exclude_train_keys}
+        train_kwargs = {k: v for k, v in self.trainer_kwargs.items()}
+
+        for w_id, (t0, t1) in enumerate(windows):
+            win_dates = self.dates[t0:t1]
+            win_start, win_end = win_dates[0], win_dates[-1]
+
+            # Slice test df for this window
+            test_mask = (
+                (self.df_test_full["date"] >= win_start) &
+                (self.df_test_full["date"] <= win_end)
+            )
+            test_df_w = self.df_test_full.loc[test_mask].copy()
+            if test_df_w.empty:
+                print(f"[RollingTrainer] Window {w_id}: empty test slice, skipping.")
+                continue
+
+            # Build TRAIN df:
+            if w_id == 0:
+                # Window 0: pure historical training
+                train_df = self.df_train_base.copy()
+                desc = "historical train"
+            else:
+                # Windows k >= 1: base train + previous test month
+                if previous_test_df is None:
+                    # Should not happen, but guard anyway
+                    train_df = self.df_train_base.copy()
+                    desc = "historical train (fallback, no prev test)"
+                else:
+                    train_df = pd.concat(
+                        [self.df_train_base, previous_test_df],
+                        axis=0
+                    ).sort_values("date")
+                    desc = "historical + previous test window"
+
+            ds_train, ds_val, ds_test = self._make_datasets(train_df, test_df_w)
+
+            num_epochs = self.num_epochs_initial if w_id == 0 else self.num_epochs_update
+
+            if w_id == 0:
+                print(
+                    f"[RollingTrainer] Window 0 | "
+                    f"train='{desc}' (rows={len(train_df)}), "
+                    f"test={win_start} → {win_end} (rows={len(test_df_w)}), "
+                    f"epochs={num_epochs}"
+                )
+                current_model = self.model_class(**self.model_kwargs)
+            else:
+                print(
+                    f"[RollingTrainer] Window {w_id} | "
+                    f"train='{desc}' (rows={len(train_df)}), "
+                    f"test={win_start} → {win_end} (rows={len(test_df_w)}), "
+                    f"epochs={num_epochs}"
+                )
+                if current_model is None:
+                    raise RuntimeError("current_model is None for w_id >= 1.")
+
+            trainer_model_kwargs: Dict[str, Any] = {"num_epochs": num_epochs}
+            if "lr" in self.trainer_kwargs:
+                trainer_model_kwargs["lr"] = self.trainer_kwargs["lr"]
+
+            trainer = Trainer(
+                model=current_model,
+                dataset_train=ds_train,
+                dataset_val=ds_val,
+                dataset_test=ds_test,
+                batch_size=self.batch_size,
+                reconcile=self.reconcile,
+                model_kwargs=trainer_model_kwargs,
+                **init_kwargs,
+            )
+
+            out = trainer.train(**train_kwargs)
+            preds, targets = out[0], out[1]
+
+            print(
+                f"[RollingTrainer] Window {w_id} | "
+                f"preds.shape={preds.shape}, targets.shape={targets.shape}"
+            )
+
+            current_model = trainer.model
+            previous_test_df = test_df_w
+
+            results.append(
+                {
+                    "window_index": w_id,
+                    "window_start": win_start,
+                    "window_end": win_end,
+                    "preds": preds,
+                    "targets": targets,
+                }
+            )
+
+        return results
