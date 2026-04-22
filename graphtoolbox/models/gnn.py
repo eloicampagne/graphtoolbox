@@ -62,7 +62,7 @@ class ConvAdapter(nn.Module):
         if "cached" in ctor_params:
             kwargs["cached"] = False
         if "add_self_loops" in ctor_params:
-            kwargs["add_self_loops"] = True
+            kwargs["add_self_loops"] = base_kwargs.get("add_self_loops", True)
         if "edge_dim" in ctor_params:
             kwargs["edge_dim"] = base_kwargs.get("edge_dim", 1)
 
