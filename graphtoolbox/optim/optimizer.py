@@ -61,6 +61,7 @@ class Optimizer():
             self.optim_kwargs = optim_kwargs
         self.num_epochs = kwargs.get('num_epochs', 200)
         self.conv_class = kwargs.get('conv_class', GATConv)
+        self.loss_fn    = kwargs.get('loss_fn', 'mse')  # 'mse' or 'nmae'
         self.is_optimized = False
 
     def _run_epoch(self, optimizer, mode: str, loader: PyGDataLoader) -> float:
@@ -105,11 +106,14 @@ class Optimizer():
             y_s = batch.y_scaled.view(-1, num_nodes).T
             mask = batch.mask_y.view(-1, num_nodes).T  
             if mask.sum() > 0:
-                mse_loss = torch.sum(((out - y_s) ** 2) * mask) / mask.sum()
+                if self.loss_fn == 'nmae':
+                    loss = (torch.sum(torch.abs(out - y_s) * mask)
+                            / (torch.sum(torch.abs(y_s) * mask) + 1e-6))
+                else:
+                    loss = torch.sum(((out - y_s) ** 2) * mask) / mask.sum()
             else:
                 print(f"[WARN] Batch {i} ignoré car aucune cible valide")
                 continue
-            loss = mse_loss
             del y_s, out
             if mode == 'train':
                 loss.backward()
