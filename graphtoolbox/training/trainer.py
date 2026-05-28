@@ -129,6 +129,7 @@ class Trainer:
         self.return_attention = kwargs.get('return_attention', False)
         self.return_group_outputs = kwargs.get('return_group_outputs', False)
         self.lam_reg = kwargs.get('lam_reg', 0)
+        self.loss_fn = kwargs.get('loss_fn', 'mse')  # 'mse' or 'nmae'
         
         self.model = model.to(DEVICE)
         self.dataset_train = dataset_train
@@ -439,14 +440,18 @@ class Trainer:
             y_s = batch.y_scaled.view(-1, num_nodes).T
             mask = batch.mask_y.view(-1, num_nodes).T  
             if mask.sum() > 0:
-                mse_loss = torch.sum(((out - y_s) ** 2) * mask) / mask.sum()
+                if self.loss_fn == 'nmae':
+                    base_loss = (torch.sum(torch.abs(out - y_s) * mask)
+                                 / (torch.sum(torch.abs(y_s) * mask) + 1e-6))
+                else:
+                    base_loss = torch.sum(((out - y_s) ** 2) * mask) / mask.sum()
             else:
                 print(f"[WARN] Batch {i} ignoré car aucune cible valide")
                 continue
             pred_diff = out[:, None, :] - out[None, :, :]
             norms = torch.norm(pred_diff, p=2, dim=2)
             reg_loss = norms.mean()
-            loss = mse_loss + self.lam_reg * reg_loss
+            loss = base_loss + self.lam_reg * reg_loss
             del y_s
             if mode == 'train':
                 loss.backward()
