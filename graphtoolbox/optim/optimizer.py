@@ -330,6 +330,11 @@ class Optimizer():
             for key, value in trial.params.items():
                 f.write(f"    {key}: {value}\n")
 
+        import json as _json
+        json_file = os.path.join(result_dir, f"{self.model_class.__name__}_best.json")
+        with open(json_file, 'w') as f:
+            _json.dump({'value': trial.value, 'params': trial.params}, f, indent=2)
+
     def run_on_server(self):
         """
         Launch an interactive Optuna dashboard to visualize study results.
