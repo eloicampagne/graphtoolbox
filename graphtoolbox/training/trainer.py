@@ -123,6 +123,10 @@ class Trainer:
     """
     def __init__(self, model, dataset_train, dataset_val, dataset_test, batch_size,
                  model_kwargs: Optional[Dict] = None, reconcile: bool = True,
+                 top_forecasts_train: Optional[torch.Tensor] = None,
+                 top_forecasts_val: Optional[torch.Tensor] = None,
+                 top_forecasts_test: Optional[torch.Tensor] = None,
+                 top_level_model: Optional[str] = 'ridge',
                  **kwargs):
         self.edge_index = kwargs.get('edge_index', None)
         self.edge_weight = kwargs.get('edge_weight', None)
@@ -130,7 +134,7 @@ class Trainer:
         self.return_group_outputs = kwargs.get('return_group_outputs', False)
         self.lam_reg = kwargs.get('lam_reg', 0)
         self.loss_fn = kwargs.get('loss_fn', 'mse')  # 'mse' or 'nmae'
-        
+
         self.model = model.to(DEVICE)
         self.dataset_train = dataset_train
         self.dataset_val = dataset_val
@@ -139,6 +143,10 @@ class Trainer:
         self.nodes = self.dataset_train.nodes
         self.num_nodes = self.dataset_train.num_nodes
         self.folder_config = dataset_train.data.folder_config
+
+        self.top_forecasts_train = top_forecasts_train.to(DEVICE) if top_forecasts_train is not None else None
+        self.top_forecasts_val = top_forecasts_val.to(DEVICE) if top_forecasts_val is not None else None
+        self.top_forecasts_test = top_forecasts_test.to(DEVICE) if top_forecasts_test is not None else None
 
         dataset_kwargs = dataset_train.dataset_kwargs
         if dataset_kwargs is None:
@@ -156,7 +164,14 @@ class Trainer:
         self.test_loader = PyGDataLoader(dataset_test, shuffle=False, drop_last=False)
 
         self._build_summing_matrix()
-        self._compute_min_trace_projection()
+        # Use identity W at init (model not yet trained); recomputed with error covariance after training.
+        self._compute_min_trace_projection(W=torch.eye(self.S.shape[0], device=DEVICE))
+
+        if self.reconcile:
+            if any(f is not None for f in [self.top_forecasts_train, self.top_forecasts_val, self.top_forecasts_test]):
+                print("[Trainer] Using external top-level forecasts for MinT reconciliation.")
+            elif top_level_model is not None:
+                self._fit_top_level_model(top_level_model)
 
     def train(self, **kwargs) -> Tuple:
         """
@@ -286,7 +301,7 @@ class Trainer:
             _ = self._run_epoch(optimizer, 'eval', self.val_loader, return_attention=self.return_attention, save=True, dataset_name='val')
             _ = self._run_epoch(optimizer, 'eval', self.test_loader, return_attention=self.return_attention, save=True, dataset_name='test')
 
-        _, preds, targets = self._predict(self.test_loader)
+        _, preds, targets = self._predict(self.test_loader, split='test')
         output_groups = getattr(self, 'group_outputs_test', None) if self.return_group_outputs else None
 
         self.is_trained = True
@@ -481,7 +496,7 @@ class Trainer:
             else:
                 return 0
 
-    def _predict(self, loader: PyGDataLoader) -> Tuple[float, torch.Tensor, torch.Tensor]:
+    def _predict(self, loader: PyGDataLoader, split: str = 'test') -> Tuple[float, torch.Tensor, torch.Tensor]:
         """
         Inference over a loader and compute loss against ground truth (sum over nodes).
 
@@ -489,6 +504,9 @@ class Trainer:
         ----------
         loader : PyGDataLoader
             DataLoader for the split to predict.
+        split : str, default='test'
+            Which split is being predicted ('train', 'val', or 'test').
+            Used to select the appropriate top-level forecasts for MinT reconciliation.
 
         Returns
         -------
@@ -507,7 +525,8 @@ class Trainer:
         Notes
         -----
         - Predictions are inverse-transformed per node using dataset_train.scalers_target.
-        - **TODO:** If reconcile=True, performs MinT reconciliation and masks unavailable horizons via dataset_test.mask_Y. 
+        - If reconcile=True, performs MinT reconciliation using external top forecasts if provided,
+          otherwise uses the sum of base predictions.
         """
         self.model.eval()
         num_nodes = self.dataset_train.num_nodes
@@ -551,11 +570,25 @@ class Trainer:
         y_preds = y_preds.reshape(num_nodes, -1)[:, :y_targets.shape[1]]
         pred_rescaled = self._rescale_predictions(y_preds).cpu().detach()
         del y_preds
+
+        top_forecast = {'train': self.top_forecasts_train, 'val': self.top_forecasts_val, 'test': self.top_forecasts_test}.get(split)
+
         if self.reconcile:
-            pred_rescaled = self._min_trace_reconciliation(preds=pred_rescaled).cpu().detach()
-            pred_rescaled = pred_rescaled[:-1] * self.dataset_test.mask_Y[:y_targets.shape[1], :y_targets.shape[1]]
-        else:
-            pred_rescaled = pred_rescaled * self.dataset_test.mask_Y
+            pred_rescaled = self._min_trace_reconciliation(
+                preds=pred_rescaled, top_forecast=top_forecast
+            ).cpu().detach()
+            # Strip appended national node if reconciliation added it.
+            if pred_rescaled.shape[0] == self.num_nodes + 1:
+                pred_rescaled = pred_rescaled[:-1]
+
+        dataset_split = {'train': self.dataset_train, 'val': self.dataset_val, 'test': self.dataset_test}.get(split, self.dataset_test)
+        if hasattr(dataset_split, 'mask_Y') and dataset_split.mask_Y is not None:
+            mask = dataset_split.mask_Y  # [num_nodes, T] or [num_nodes, T, 1]
+            T_pred = pred_rescaled.shape[1]
+            m = mask[:, :T_pred]
+            if m.dim() == 3:
+                m = m.squeeze(-1)
+            pred_rescaled = pred_rescaled * m.float().to(pred_rescaled.device)
 
         loss = getattr(graphtoolbox.training.metrics, 'RMSE')(
             preds=pred_rescaled.cpu().detach().sum(dim=0),
@@ -607,7 +640,7 @@ class Trainer:
             print("You need to train the model first!")
             return
 
-        _, preds, targets = self._predict(self.test_loader)
+        _, preds, targets = self._predict(self.test_loader, split='test')
 
         if isinstance(losses, str):
             losses = [losses]
@@ -665,7 +698,9 @@ class Trainer:
         Parameters
         ----------
         W : torch.Tensor, optional
-            Weight matrix (defaults to identity).
+            Weight matrix. Defaults to the identity (OLS / ordinary reconciliation).
+            Pass a custom W to use WLS or full MinT — but beware that the full error
+            covariance can be near-singular for highly correlated series.
 
         Returns
         -------
@@ -673,38 +708,373 @@ class Trainer:
             Projection matrix P such that reconciled forecasts = S @ G @ forecasts.
         """
         if W is None:
-            W_inv = torch.eye(self.S.shape[0], device=DEVICE)
-            self.W = W_inv
+            W = torch.eye(self.S.shape[0], device=DEVICE)
+        self.W = W.to(DEVICE)
+
+        if W.shape[0] == W.shape[1] and torch.allclose(W, torch.diag(torch.diagonal(W))):
+            W_inv = torch.diag(1.0 / torch.diagonal(W))
         else:
-            self.W = W.to(DEVICE)
-            if W.shape[0] == W.shape[1] and torch.allclose(W, torch.diag(torch.diagonal(W))):
-                W_inv = torch.diag(1.0 / torch.diagonal(W))
-            else:
-                W_inv = torch.inverse(W)
+            W_inv = torch.inverse(W)
 
         S_t = self.S.T
         middle = torch.inverse(S_t @ W_inv @ self.S)
         self.G = middle @ S_t @ W_inv
         self.P = self.S @ self.G
- 
-    def _min_trace_reconciliation(self, preds: torch.Tensor) -> torch.Tensor:
+
+    def _compute_validation_error_covariance(self) -> torch.Tensor:
+        """
+        Estimate the forecast error covariance matrix on the validation set.
+
+        Not called automatically — only use this after training if you want to
+        pass a data-driven W to ``_compute_min_trace_projection``. For highly
+        correlated series the full covariance is near-singular; prefer the
+        diagonal (variance-only) version or stick with the identity default.
+
+        Returns
+        -------
+        torch.Tensor
+            Error covariance W of shape [num_nodes+1, num_nodes+1].
+        """
+        self.model.eval()
+        num_nodes = self.dataset_train.num_nodes
+        errors = []
+
+        with torch.no_grad():
+            for batch in self.val_loader:
+                for attr in ['x', 'y_scaled', 'y', 'edge_weight', 'mask_y']:
+                    if getattr(batch, attr, None) is not None:
+                        setattr(batch, attr, getattr(batch, attr).to(torch.float32))
+                batch = batch.to(DEVICE)
+
+                y_hat = self.model(
+                    batch.x,
+                    batch.edge_index,
+                    edge_weight=getattr(batch, 'edge_weight', None),
+                    mask=getattr(batch, 'mask_y', None),
+                    return_group_outputs=False,
+                    return_attention=False
+                )
+
+                y_hat = y_hat.reshape(num_nodes, -1)
+                y_true = batch.y.reshape(num_nodes, -1)
+
+                y_hat_rescaled = self._rescale_predictions(y_hat)
+                base_errors = y_hat_rescaled.cpu() - y_true.cpu()
+
+                top_pred = y_hat_rescaled.sum(dim=0, keepdim=True)
+                top_true = y_true.sum(dim=0, keepdim=True).cpu()
+                top_error = top_pred.cpu() - top_true
+
+                errors.append(torch.cat([base_errors, top_error], dim=0))
+
+        all_errors = torch.cat(errors, dim=1)
+        centered = all_errors - all_errors.mean(dim=1, keepdim=True)
+        W = (centered @ centered.T) / (all_errors.shape[1] - 1)
+        W = W + 1e-6 * torch.eye(W.shape[0], device=W.device)
+        return W.to(DEVICE)
+
+    def _min_trace_reconciliation(self, preds: torch.Tensor,
+                                   top_forecast: Optional[torch.Tensor] = None) -> torch.Tensor:
         """
         Apply MinT reconciliation to hierarchical forecasts.
 
         Parameters
         ----------
         preds : torch.Tensor
-            Model forecasts for base series.
+            Base-level forecasts [num_nodes, T].
+        top_forecast : torch.Tensor, optional
+            External top-level forecast [1, T] or [T]. If None, uses the sum of
+            base predictions as the top-level constraint.
 
         Returns
         -------
         torch.Tensor
-            Reconciled forecasts (base + aggregated).
+            Reconciled forecasts [num_nodes+1, T].
         """
-        national_pred = preds.sum(axis=0).unsqueeze(0)
-        new_preds = torch.cat([preds, national_pred]).to(DEVICE)
-        return self.S @ self.G @ new_preds
-    
+        if top_forecast is not None:
+            if top_forecast.dim() == 1:
+                top_forecast = top_forecast.unsqueeze(0)
+            T = min(preds.shape[1], top_forecast.shape[1])
+            preds = preds[:, :T]
+            top_forecast = top_forecast[:, :T]
+            y_combined = torch.cat([preds, top_forecast.to(preds.device)], dim=0)
+        else:
+            national_pred = preds.sum(dim=0, keepdim=True)
+            y_combined = torch.cat([preds, national_pred], dim=0)
+
+        return self.S @ self.G @ y_combined.to(DEVICE)
+
+    def _fit_top_level_model(self, model_type: str = 'ridge') -> None:
+        """
+        Fit a univariate model on the national-level (aggregated) target to produce
+        top-level forecasts for MinT reconciliation when none are provided externally.
+
+        Parameters
+        ----------
+        model_type : {'ridge', 'rf', 'xgb', 'gam', 'gcn'}
+            Model family to use.
+            - 'ridge' : RidgeCV (fast, smooth, good default).
+            - 'rf'    : Random Forest (non-linear, no external dependency).
+            - 'xgb'   : XGBoost (fast, accurate; requires ``pip install xgboost``).
+            - 'gam'   : Generalised Additive Model (interpretable; requires ``pip install pygam``).
+            - 'gcn'   : 2-layer GCN trained on graph batches; node forecasts are summed
+                        to form the national aggregate. Uses the same edge structure as
+                        the main model.
+
+        Notes
+        -----
+        Features: lag-48 (1-day), lag-336 (7-day), EWM-48, EWM-336, and cyclical
+        encodings of hour-of-day, day-of-week, and month.  All features are
+        computed on the chronologically concatenated train+val+test series so that
+        lag values at split boundaries are correct.  Predictions are stored in
+        ``self.top_forecasts_train``, ``self.top_forecasts_val``, and
+        ``self.top_forecasts_test``.
+        """
+        import pandas as pd
+        import numpy as np
+        from sklearn.preprocessing import StandardScaler
+
+        print(f"[Trainer] Fitting top-level model ({model_type}) for MinT reconciliation...")
+
+        target_col = self.dataset_kwargs.get('target_base', 'load')
+
+        def aggregate(dataset) -> pd.Series:
+            # Use the dataframe that GraphDataset itself was built from so that
+            # the number of dates matches len(dataset) exactly.
+            df = dataset.dataframe
+            return df.groupby('date')[target_col].sum().sort_index()
+
+        s_train = aggregate(self.dataset_train)
+        s_val   = aggregate(self.dataset_val)   if self.dataset_val   is not None else None
+        s_test  = aggregate(self.dataset_test)
+
+        # Infer temporal resolution from the training index.
+        train_idx = pd.to_datetime(s_train.index)
+        delta_hours = (train_idx[1] - train_idx[0]).total_seconds() / 3600
+        steps_per_day  = max(1, round(24 / delta_hours))
+        steps_per_week = steps_per_day * 7
+
+        # Concatenate chronologically so lag features span across split boundaries.
+        # Deduplicate by INDEX (not by value) so dates that happen to share the same
+        # national sum are not silently dropped, which would misalign X and y.
+        s_full = pd.concat([s for s in [s_train, s_val, s_test] if s is not None])
+        s_full = s_full.sort_index()
+        s_full = s_full[~s_full.index.duplicated(keep='first')]
+
+        # EWM must be computed on past values only (shift by 1) and span must be
+        # ≥ 2 to avoid alpha=1 (which would set ewm[t] = y[t], i.e. leakage).
+        ewm_day_span  = max(2, steps_per_day)
+        ewm_week_span = max(2, steps_per_week)
+
+        def make_features(s: pd.Series) -> pd.DataFrame:
+            df = pd.DataFrame({'y': s.values}, index=s.index)
+            df['lag_day']  = df['y'].shift(steps_per_day)
+            df['lag_week'] = df['y'].shift(steps_per_week)
+            df['ewm_day']  = df['y'].shift(1).ewm(span=ewm_day_span,  adjust=False).mean()
+            df['ewm_week'] = df['y'].shift(1).ewm(span=ewm_week_span, adjust=False).mean()
+            idx = pd.to_datetime(s.index)
+            hour = idx.hour + idx.minute / 60
+            df['hour_sin']  = np.sin(2 * np.pi * hour / 24)
+            df['hour_cos']  = np.cos(2 * np.pi * hour / 24)
+            df['dow_sin']   = np.sin(2 * np.pi * idx.dayofweek / 7)
+            df['dow_cos']   = np.cos(2 * np.pi * idx.dayofweek / 7)
+            df['month_sin'] = np.sin(2 * np.pi * idx.month / 12)
+            df['month_cos'] = np.cos(2 * np.pi * idx.month / 12)
+            return df
+
+        FEAT = ['lag_day', 'lag_week', 'ewm_day', 'ewm_week',
+                'hour_sin', 'hour_cos', 'dow_sin', 'dow_cos', 'month_sin', 'month_cos']
+
+        feat_full = make_features(s_full)
+
+        def get_X_y(s: pd.Series):
+            # Both X and y are sliced from feat_full so they are always the same length.
+            mask = feat_full.index.isin(s.index)
+            X = feat_full.loc[mask, FEAT].bfill().fillna(0).values
+            y = feat_full.loc[mask, 'y'].values
+            return X, y
+
+        X_train, y_train = get_X_y(s_train)
+        X_val,   y_val   = get_X_y(s_val)  if s_val  is not None else (None, None)
+        X_test,  y_test  = get_X_y(s_test)
+
+        scaler = StandardScaler()
+        X_train_s = scaler.fit_transform(X_train)
+        X_val_s   = scaler.transform(X_val)  if X_val  is not None else None
+        X_test_s  = scaler.transform(X_test)
+
+        if model_type == 'ridge':
+            from sklearn.linear_model import RidgeCV
+            mdl = RidgeCV(alphas=[0.1, 1.0, 10.0, 100.0])
+            mdl.fit(X_train_s, y_train)
+            pred_train = mdl.predict(X_train_s)
+            pred_val   = mdl.predict(X_val_s)  if X_val_s  is not None else None
+            pred_test  = mdl.predict(X_test_s)
+
+        elif model_type == 'rf':
+            from sklearn.ensemble import RandomForestRegressor
+            mdl = RandomForestRegressor(n_estimators=200, max_depth=15,
+                                        min_samples_leaf=20, n_jobs=-1, random_state=42)
+            mdl.fit(X_train_s, y_train)
+            pred_train = mdl.predict(X_train_s)
+            pred_val   = mdl.predict(X_val_s)  if X_val_s  is not None else None
+            pred_test  = mdl.predict(X_test_s)
+
+        elif model_type == 'xgb':
+            try:
+                import xgboost as xgb
+            except ImportError:
+                raise ImportError("xgboost is required for top_level_model='xgb'. "
+                                  "Install it with: pip install xgboost")
+            eval_set = [(X_val_s, y_val)] if X_val_s is not None else None
+            mdl = xgb.XGBRegressor(
+                n_estimators=500, learning_rate=0.05, max_depth=6,
+                subsample=0.8, colsample_bytree=0.8,
+                random_state=42, n_jobs=-1, verbosity=0,
+                early_stopping_rounds=20 if eval_set else None,
+            )
+            mdl.fit(X_train_s, y_train, eval_set=eval_set, verbose=False)
+            pred_train = mdl.predict(X_train_s)
+            pred_val   = mdl.predict(X_val_s)  if X_val_s  is not None else None
+            pred_test  = mdl.predict(X_test_s)
+
+        elif model_type == 'gam':
+            try:
+                from pygam import LinearGAM, s as gam_s, l as gam_l
+            except ImportError:
+                raise ImportError("pygam is required for top_level_model='gam'. "
+                                  "Install it with: pip install pygam")
+            # Lag features modelled linearly; calendar features with splines.
+            terms = gam_l(0) + gam_l(1) + gam_l(2) + gam_l(3) \
+                  + gam_s(4) + gam_s(5) + gam_s(6) + gam_s(7) + gam_s(8) + gam_s(9)
+            mdl = LinearGAM(terms)
+            mdl.gridsearch(X_train_s, y_train)
+            pred_train = mdl.predict(X_train_s)
+            pred_val   = mdl.predict(X_val_s)  if X_val_s  is not None else None
+            pred_test  = mdl.predict(X_test_s)
+
+        elif model_type == 'gcn':
+            # Small 2-layer GCN trained end-to-end: each node produces a forecast,
+            # node outputs are summed to the national aggregate.
+            from torch_geometric.nn import GCNConv
+            import torch.nn as nn
+
+            _in_ch  = self.dataset_train[0].x.shape[-1]
+            _out_ch = self.dataset_train[0].y.shape[-1]
+            _N      = self.num_nodes
+
+            class _GCNNational(nn.Module):
+                def __init__(self):
+                    super().__init__()
+                    self.conv1 = GCNConv(_in_ch, 64)
+                    self.conv2 = GCNConv(64, _out_ch)
+
+                def forward(self, x, edge_index, edge_weight=None):
+                    x = torch.relu(self.conv1(x, edge_index, edge_weight))
+                    return self.conv2(x, edge_index, edge_weight)  # [N_total, out_ch]
+
+            _gcn = _GCNNational().to(DEVICE)
+            _opt = torch.optim.Adam(_gcn.parameters(), lr=1e-3, weight_decay=1e-4)
+
+            _bs = min(32, len(self.dataset_train))
+            _tr_loader  = PyGDataLoader(self.dataset_train, batch_size=_bs, shuffle=True)
+            _val_loader = PyGDataLoader(self.dataset_val,   batch_size=_bs, shuffle=False) \
+                          if self.dataset_val is not None else None
+
+            _best_val, _best_state, _no_imp = float('inf'), None, 0
+            _patience_gcn = 10
+
+            def _prep(b):
+                # Cast all floating-point attributes to float32 on CPU before
+                # moving to device — MPS rejects float64 tensors outright.
+                for _attr in ['x', 'y', 'edge_weight']:
+                    _t = getattr(b, _attr, None)
+                    if _t is not None and _t.is_floating_point():
+                        setattr(b, _attr, _t.float())
+                return b.to(DEVICE)
+
+            def _ew(b):
+                ew = getattr(b, 'edge_weight', None)
+                return ew if ew is not None else None  # already float32 after _prep
+
+            for _ep in range(100):
+                _gcn.train()
+                for _b in _tr_loader:
+                    _b = _prep(_b)
+                    _B = _b.num_graphs
+                    # batch.y: [N*B, out_ch] → sum over nodes → [B, out_ch]
+                    _y_nat  = _b.y.view(_B, _N, _out_ch).sum(dim=1)
+                    _out    = _gcn(_b.x, _b.edge_index, _ew(_b))
+                    _o_nat  = _out.view(_B, _N, _out_ch).sum(dim=1)
+                    _l = torch.nn.functional.mse_loss(_o_nat, _y_nat)
+                    _opt.zero_grad(); _l.backward(); _opt.step()
+
+                if _val_loader is not None:
+                    _gcn.eval()
+                    _vl = 0.0
+                    with torch.no_grad():
+                        for _b in _val_loader:
+                            _b = _prep(_b)
+                            _B = _b.num_graphs
+                            _y_nat = _b.y.view(_B, _N, _out_ch).sum(dim=1)
+                            _o     = _gcn(_b.x, _b.edge_index, _ew(_b))
+                            _o_nat = _o.view(_B, _N, _out_ch).sum(dim=1)
+                            _vl   += torch.nn.functional.mse_loss(_o_nat, _y_nat).item()
+                    if _vl < _best_val - 1e-6:
+                        _best_val   = _vl
+                        _best_state = {k: v.clone() for k, v in _gcn.state_dict().items()}
+                        _no_imp     = 0
+                    else:
+                        _no_imp += 1
+                        if _no_imp >= _patience_gcn:
+                            print(f"[Trainer] GCN early stop at epoch {_ep + 1}.")
+                            break
+
+            if _best_state is not None:
+                _gcn.load_state_dict(_best_state)
+
+            def _gcn_predict(dataset):
+                _loader = PyGDataLoader(dataset, batch_size=_bs, shuffle=False)
+                _gcn.eval()
+                _preds = []
+                with torch.no_grad():
+                    for _b in _loader:
+                        _b   = _prep(_b)
+                        _B   = _b.num_graphs
+                        _out = _gcn(_b.x, _b.edge_index, _ew(_b))
+                        _o_nat = _out.view(_B, _N, _out_ch).sum(dim=1).cpu()  # [B, out_ch]
+                        _preds.append(_o_nat)
+                return torch.cat(_preds, dim=0).flatten().numpy()  # [T * out_ch]
+
+            pred_train = _gcn_predict(self.dataset_train)
+            pred_val   = _gcn_predict(self.dataset_val) if self.dataset_val is not None else None
+            pred_test  = _gcn_predict(self.dataset_test)
+
+        else:
+            raise ValueError(
+                f"Unknown top_level_model='{model_type}'. "
+                "Choose from 'ridge', 'rf', 'xgb', 'gam', 'gcn', or None."
+            )
+
+        def _rmse(p, t): return np.sqrt(np.mean((p - t) ** 2))
+        def _mape(p, t): return np.mean(np.abs((p - t) / np.where(np.abs(t) < 1e-8, 1e-8, t))) * 100
+        def _nmae(p, t): return np.mean(np.abs(p - t)) / (np.mean(np.abs(t)) + 1e-8) * 100
+
+        header = f"{'split':<6} {'RMSE':>12} {'MAPE%':>10} {'nMAE%':>10}"
+        rows = [header, "-" * len(header)]
+        for tag, p, t in [("train", pred_train, y_train),
+                           ("val",   pred_val,   y_val),
+                           ("test",  pred_test,  y_test)]:
+            if p is None or t is None:
+                continue
+            rows.append(f"{tag:<6} {_rmse(p,t):>12.2f} {_mape(p,t):>10.2f} {_nmae(p,t):>10.2f}")
+        print(f"[Trainer] Top-level {model_type} — national aggregate errors:\n" + "\n".join(rows))
+
+        self.top_forecasts_train = torch.tensor(pred_train, dtype=torch.float32).to(DEVICE)
+        self.top_forecasts_val   = torch.tensor(pred_val,   dtype=torch.float32).to(DEVICE) \
+                                   if pred_val is not None else None
+        self.top_forecasts_test  = torch.tensor(pred_test,  dtype=torch.float32).to(DEVICE)
+
 class RollingTrainer:
     """
     Warm-start rolling retraining without future leakage.
