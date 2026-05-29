@@ -9,6 +9,7 @@ from torch_geometric.nn import (
     APPNP, ChebConv, GatedGraphConv, MixHopConv, GCN2Conv,
     DirGNNConv, GravNetConv, NNConv, EdgeConv, DNAConv, SignedConv
 )
+from torch_geometric.nn.conv import WLConv
 
 def _mlp(ch_in, ch_out, hidden=None, act=nn.ReLU, last_act=False):
     hidden = hidden or max(ch_in, ch_out)
@@ -37,6 +38,19 @@ class ConvAdapter(nn.Module):
         supports_heads = "heads" in ctor_params
         supports_concat = "concat" in ctor_params
 
+        # FusedGATConv uses *args/**kwargs and inherits GATConv; inject dims manually
+        if name == "FusedGATConv":
+            h = self.heads
+            kwargs["in_channels"] = in_dim
+            if h > 0 and (in_dim % h) == 0:
+                kwargs["out_channels"] = in_dim // h
+                kwargs["concat"] = True
+            else:
+                kwargs["out_channels"] = in_dim
+                kwargs["concat"] = False
+            kwargs["heads"] = h
+            kwargs["add_self_loops"] = False  # FusedGATConv does not support self-loops
+
         # --- dimension policy ---
         if "channels" in ctor_params:
             kwargs["channels"] = in_dim
@@ -52,16 +66,20 @@ class ConvAdapter(nn.Module):
                     kwargs["concat"] = True
             else:
                 # keep feature size unchanged across layers
-                if name == "MixHopConv" and "k" in ctor_params:
-                    k = base_kwargs.get("k", 2)
-                    kwargs["out_channels"] = max(1, in_dim // (k + 1))
+                if name == "MixHopConv":
+                    _powers = base_kwargs.get("powers", [0, 1, 2])
+                    _n = len(_powers)
+                    kwargs["out_channels"] = max(1, in_dim // _n)
+                elif name == "SignedConv":
+                    # first_aggr=True: output is 2*out_channels; halve to land on in_dim
+                    kwargs["out_channels"] = max(1, in_dim // 2)
                 else:
                     kwargs["out_channels"] = in_dim
         if supports_heads:
             kwargs["heads"] = self.heads
         if "cached" in ctor_params:
             kwargs["cached"] = False
-        if "add_self_loops" in ctor_params:
+        if "add_self_loops" in ctor_params and name != "FusedGATConv":
             kwargs["add_self_loops"] = base_kwargs.get("add_self_loops", True)
         if "edge_dim" in ctor_params:
             kwargs["edge_dim"] = base_kwargs.get("edge_dim", 1)
@@ -75,8 +93,9 @@ class ConvAdapter(nn.Module):
             kwargs["num_layers"] = 2
             if "out_channels" in ctor_params:
                 kwargs["out_channels"] = in_dim
-        if conv_class is MixHopConv and "k" in ctor_params:
-            kwargs["k"] = base_kwargs.get("k", 2)
+        if conv_class is MixHopConv:
+            _powers = base_kwargs.get("powers", [0, 1, 2])
+            kwargs.setdefault("powers", _powers)
         if conv_class is GCN2Conv and "alpha" in ctor_params:
             kwargs.setdefault("alpha", 0.1)
         if name == "SSGConv" and "alpha" in ctor_params:
@@ -85,18 +104,44 @@ class ConvAdapter(nn.Module):
             # CGConv requires 'dim' to match edge_attr size (not node feature size)
             kwargs["dim"] = base_kwargs.get("dim", base_kwargs.get("edge_dim", 1))
         if name == "GPSConv":
-            # provide a sensible base message-passing conv
-            kwargs["conv"] = GCNConv
+            # provide an instantiated base message-passing conv
+            kwargs["conv"] = GCNConv(in_dim, in_dim)
         if name == "PANConv":
             kwargs["filter_size"] = 2
         if name == "PDNConv":
             kwargs["hidden_channels"] = in_dim
         if conv_class is DirGNNConv and "conv" in ctor_params:
-            kwargs["conv"] = GCNConv  # default base conv
+            kwargs["conv"] = GCNConv(in_dim, in_dim)  # must be an instance
         if conv_class is GravNetConv:
             kwargs.setdefault("space_dimensions", min(4, max(2, in_dim)))
             kwargs.setdefault("propagate_dimensions", min(in_dim, 16))
             kwargs.setdefault("k", 3)
+
+        # --- relational convolutions: default to 1 relation ---
+        if name in ("RGCNConv", "FastRGCNConv", "RGATConv") and "num_relations" in ctor_params:
+            kwargs.setdefault("num_relations", 1)
+
+        # --- convolutions requiring extra constructor arguments ---
+        if name == "DynamicEdgeConv" and "nn" in ctor_params:
+            kwargs["nn"] = _mlp(2 * in_dim, in_dim, hidden=in_dim)
+            kwargs.setdefault("k", 6)
+        if name == "GMMConv" and "dim" in ctor_params:
+            kwargs.setdefault("dim", base_kwargs.get("edge_dim", 1))
+            kwargs.setdefault("kernel_size", 5)
+        if name == "GeneralConv" and "in_edge_channels" in ctor_params:
+            kwargs.setdefault("in_edge_channels", base_kwargs.get("edge_dim", 1))
+        if name == "PNAConv" and "aggregators" in ctor_params:
+            kwargs.setdefault("aggregators", ["mean", "max", "sum"])
+            kwargs.setdefault("scalers", ["identity"])
+            if "deg" not in kwargs and "deg" not in base_kwargs:
+                kwargs["deg"] = torch.ones(10, dtype=torch.long)
+        if name == "SplineConv" and "dim" in ctor_params:
+            kwargs.setdefault("dim", base_kwargs.get("edge_dim", 1))
+            kwargs.setdefault("kernel_size", 5)
+        if name == "XConv" and "dim" in ctor_params:
+            kwargs.setdefault("dim", 3)
+            kwargs.setdefault("kernel_size", 5)
+            kwargs.setdefault("hidden_channels", in_dim)
 
         # constructor-MLPs
         if conv_class is NNConv:
@@ -111,12 +156,27 @@ class ConvAdapter(nn.Module):
         if name in ("GINConv", "GINEConv") and "nn" in ctor_params:
             kwargs["nn"] = _mlp(in_dim, kwargs.get("out_channels", in_dim), hidden=in_dim)
         if name == "SignedConv" and "first_aggr" in ctor_params:
-            kwargs.setdefault("first_aggr", "tanh")
+            kwargs.setdefault("first_aggr", True)
 
         # instantiate convolution
         self.conv = conv_class(**kwargs)
         self.capture_attention = False
         self.last_attention = None
+
+        # Convolutions whose output dim differs from in_dim: project back
+        if name == "MixHopConv":
+            _powers = kwargs.get("powers", base_kwargs.get("powers", [0, 1, 2]))
+            _n = len(_powers)
+            _oc = kwargs.get("out_channels", max(1, in_dim // _n))
+            actual_out = _n * _oc
+            self.proj = nn.Linear(actual_out, in_dim) if actual_out != in_dim else None
+        elif name == "SignedConv":
+            # first_aggr=True: actual output is 2*out_channels
+            _oc = kwargs.get("out_channels", max(1, in_dim // 2))
+            actual_out = 2 * _oc
+            self.proj = nn.Linear(actual_out, in_dim) if actual_out != in_dim else None
+        else:
+            self.proj = None
 
         try:
             self._forward_params = set(signature(self.conv.forward).parameters.keys())
@@ -128,6 +188,16 @@ class ConvAdapter(nn.Module):
         if isinstance(self.conv, DNAConv) and x.dim() == 2:
             x = x.unsqueeze(1)
 
+        # WLConv requires 1D integer labels; convert float features to one-hot then back
+        if isinstance(self.conv, WLConv):
+            idx = x.argmax(dim=-1) if x.dim() > 1 else x.long()
+            x_one_hot = torch.zeros_like(x if x.dim() > 1 else x.unsqueeze(-1).expand(-1, self.in_dim))
+            x_one_hot.scatter_(1, idx.unsqueeze(1), 1.0)
+            out_long = self.conv(x_one_hot, edge_index)          # [N] long hash
+            out_float = torch.zeros(out_long.size(0), self.in_dim, device=x.device)
+            out_float.scatter_(1, (out_long % self.in_dim).unsqueeze(1), 1.0)
+            return out_float
+
         call = {"x": x}
         if "edge_index" in self._forward_params:
             call["edge_index"] = edge_index
@@ -135,9 +205,13 @@ class ConvAdapter(nn.Module):
             call["hyperedge_index"] = edge_index
 
         # common optional tensors
-        for name in ("edge_weight", "edge_attr", "pos", "batch", "edge_type", "pseudo", "normal"):
-            if name in self._forward_params and tensors.get(name) is not None:
-                call[name] = tensors[name]
+        for key in ("edge_weight", "edge_attr", "pos", "batch", "edge_type", "pseudo", "normal"):
+            if key in self._forward_params and tensors.get(key) is not None:
+                call[key] = tensors[key]
+
+        # FAConv with normalize=True internally runs gcn_norm and asserts edge_weight is None
+        if type(self.conv).__name__ == "FAConv" and getattr(self.conv, "normalize", False):
+            call.pop("edge_weight", None)
 
         E = edge_index.size(1)
         dev = x.device
@@ -156,18 +230,20 @@ class ConvAdapter(nn.Module):
             call["x_0"] = x0
 
         # Some convs hard-require edge_attr; provide a safe default
-        needs_edge_attr = isinstance(self.conv, (TransformerConv, NNConv, SignedConv)) or \
+        # Note: SignedConv is excluded — it uses pos/neg_edge_index, not edge_attr
+        needs_edge_attr = isinstance(self.conv, (TransformerConv, NNConv)) or \
                           ("edge_attr" in self._forward_params and "edge_attr" not in call)
         if needs_edge_attr and "edge_attr" not in call:
             ed = getattr(self.conv, "edge_dim", 1)
             call["edge_attr"] = torch.ones(E, ed, device=dev)
 
-        # SignedConv special case
+        # SignedConv uses pos/neg edge indices instead of edge_index
         if isinstance(self.conv, SignedConv):
+            call.pop("edge_index", None)
+            call.pop("edge_attr", None)
             call["pos_edge_index"] = edge_index
             call["neg_edge_index"] = edge_index
 
-        # TransformerConv fallback already covered above via needs_edge_attr
         # --- attention capture ---
         supports_attention = "return_attention_weights" in self._forward_params
         self.last_attention = None
@@ -178,9 +254,12 @@ class ConvAdapter(nn.Module):
                 self.last_attention = (ei.detach().cpu(), aw.detach().cpu())
             else:
                 self.last_attention = (None, torch.as_tensor(attn).detach().cpu())
-            return out
         else:
-            return self.conv(**call)
+            out = self.conv(**call)
+
+        if self.proj is not None:
+            out = self.proj(out)
+        return out
 
 class myGNN(nn.Module):
     def __init__(
