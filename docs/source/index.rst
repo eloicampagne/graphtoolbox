@@ -55,7 +55,7 @@ GraphToolbox benchmarks the entire ``torch_geometric.nn.conv`` collection agains
      - Convolutions
    * - GCN / Spectral
      - |green|
-     - GCNConv, ChebConv, SGConv, SSGConv, LGConv, GCN2Conv, ClusterGCNConv
+     - GCNConv, ChebConv, SGConv, SSGConv, LGConv, GCN2Conv, ClusterGCNConv, FAConv
    * - Attention-based
      - |green|
      - GATConv, GATv2Conv, SuperGATConv, TransformerConv, AGNNConv, DNAConv
@@ -67,7 +67,7 @@ GraphToolbox benchmarks the entire ``torch_geometric.nn.conv`` collection agains
      - GINConv, GINEConv
    * - Edge-conditioned
      - |green|
-     - NNConv, CGConv, GMMConv, GeneralConv, XConv
+     - NNConv, ECConv, CGConv, GMMConv, GeneralConv, XConv
    * - Recurrent / Gated
      - |green|
      - GatedGraphConv, ARMAConv, TAGConv
@@ -110,16 +110,16 @@ GraphToolbox benchmarks the entire ``torch_geometric.nn.conv`` collection agains
      - Count
      - Percentage
    * - |green|
-     - **49**
-     - **77.8 %**
+     - **51**
+     - **78.5 %**
    * - |red|
      - **1**
-     - **1.6 %**
+     - **1.5 %**
    * - |white|
      - **13**
-     - **20.6 %**
+     - **20.0 %**
    * - **Total Tested**
-     - **63**
+     - **65**
      - **100 %**
 
 FusedGATConv is not broken; it requires the ``dgNN`` package which is not available on all platforms.

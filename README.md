@@ -20,32 +20,39 @@ We benchmarked the entire collection of `torch_geometric.nn.conv` layers against
 
 Legend:
 - 🟢 = Working (fully compatible with `myGNN`)
-- 🔴 = Failing (missing mandatory arguments, incompatible tensor shapes, or structural assumptions not met)
+- 🔴 = Skipped (requires the `dgNN` package, not available on all platforms)
 - ⚪️ = Skipped (requires CUDA-specific dependencies or device-restricted libraries)
 
-| Convolution Type               | Status  | Notes |
-|-------------------------|---------|-------|
-| GCN / Spectral          | 🟢 | GCNConv, ChebConv, SGConv, SSGConv |
-| Attention-based         | 🟢 | GAT, GATv2, SuperGAT, TransformerConv |
-| MPNN (neighborhood)     | 🟢 | SAGE, GENConv, GraphConv, MFConv |
-| MLP-based (GIN-style)   | 🟢 | GIN, GINE |
-| Edge-conditioned        | 🟢 | NNConv |
-| Clustering              | 🟢 | ClusterGCNConv |
-| Physics / Geometry      | 🟢 | FeaSt|
-| Dynamic aggregators     | 🔴 | PNAConv, MixHopConv |
-| Relational              | 🔴 | RGCNConv, RGATConv, FastRGCNConv |
-| Heterogeneous graphs    | ⚪️ | HANConv, HGTConv, HeteroConv |
-| Point-cloud             | ⚪️ | PointNetConv, PointConv, XConv |
+| Convolution Type        | Status | Convolutions |
+|-------------------------|--------|--------------|
+| GCN / Spectral          | 🟢 | GCNConv, ChebConv, SGConv, SSGConv, LGConv, GCN2Conv, ClusterGCNConv, FAConv |
+| Attention-based         | 🟢 | GATConv, GATv2Conv, SuperGATConv, TransformerConv, AGNNConv, DNAConv |
+| MPNN / Aggregation      | 🟢 | SAGEConv, GENConv, GraphConv, MFConv, LEConv, SimpleConv, EGConv, GravNetConv |
+| MLP-based (GIN-style)   | 🟢 | GINConv, GINEConv |
+| Edge-conditioned        | 🟢 | NNConv, ECConv, CGConv, GMMConv, GeneralConv, XConv |
+| Recurrent / Gated       | 🟢 | GatedGraphConv, ARMAConv, TAGConv |
+| Residual / Deep         | 🟢 | DirGNNConv, AntiSymmetricConv, FiLMConv, ResGatedGraphConv, PDNConv |
+| Spectral / Poly         | 🟢 | MixHopConv, GPSConv, FeaStConv, SplineConv, PANConv |
+| Dynamic aggregators     | 🟢 | PNAConv, EdgeConv, DynamicEdgeConv |
+| Relational              | 🟢 | RGCNConv, RGATConv, FastRGCNConv |
+| Graph-level             | 🟢 | WLConv, SignedConv |
+| Missing optional deps   | 🔴 | FusedGATConv (`dgNN`) |
+| Heterogeneous graphs    | ⚪️ | HANConv, HGTConv, HEATConv, HeteroConv |
+| Point-cloud             | ⚪️ | PointNetConv, PointConv, PointGNNConv, PointTransformerConv, PPFConv |
+| CuGraph (CUDA only)     | ⚪️ | CuGraphGATConv, CuGraphRGCNConv, CuGraphSAGEConv |
 | Hypergraph              | ⚪️ | HypergraphConv |
 
 Detailed statistics per status:
 
-| Status  | Count | Percentage |
-|---------|-------|------------|
-| 🟢 | **35** | **53.8 %** |
-| 🔴 | **17** | **26.2 %** |
+| Status | Count | Percentage |
+|--------|-------|------------|
+| 🟢 | **51** | **78.5 %** |
+| 🔴 | **1**  | **1.5 %**  |
 | ⚪️ | **13** | **20.0 %** |
-| **Total Tested** | **65** | **100%** |
+| **Total Tested** | **65** | **100 %** |
+
+FusedGATConv is not broken; it requires the `dgNN` package which is not available on all platforms. Installing it will make it pass.
+Installing `torch-cluster`, `torch-sparse`, and `torch-spline-conv` unlocked DynamicEdgeConv, GravNetConv, XConv, PANConv, and SplineConv.
 
 If you spot a missing convolution, find an incompatibility, or want to help extend support, contributions are warmly welcomed! Feel free to open an issue or submit a PR so we can improve these results.
 
@@ -59,6 +66,15 @@ git clone git@github.com:eloicampagne/GraphToolbox.git
 cd GraphToolbox
 pip install .
 ```
+
+To unlock the full set of supported convolutions, install the optional PyTorch Geometric extensions that match your PyTorch and platform versions. Replace `${TORCH}` and `${CUDA}` with the appropriate values (e.g. `2.5.1` and `cpu`):
+
+```sh
+pip install torch-scatter torch-sparse torch-cluster torch-spline-conv \
+    -f https://data.pyg.org/whl/torch-${TORCH}+${CUDA}.html
+```
+
+Without these packages, DynamicEdgeConv, GravNetConv, XConv, PANConv, and SplineConv are unavailable. FusedGATConv additionally requires `dgNN`, which is not available on all platforms.
 
 ## Usage
 
