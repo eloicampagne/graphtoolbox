@@ -156,6 +156,100 @@ def plot_graph_map(edge_index: torch.Tensor, edge_weight: torch.Tensor, df_pos: 
     cbar = plt.colorbar(sm, ax=ax, shrink=0.5, aspect=20)
     cbar.set_label('Edge Weight')
     
+def plot_node_errors_map(node_errors: dict, nodes: list, df_pos: pd.DataFrame, **kwargs):
+    """
+    Display a French map with one panel per method, each node coloured by its error.
+
+    Parameters
+    ----------
+    node_errors : dict[str, array-like]
+        Mapping from method label to a 1-D array of length ``num_nodes`` containing
+        the per-node error metric (e.g. MAPE in %).
+    nodes : list[str]
+        Ordered list of node names matching the rows of ``node_errors`` arrays.
+        Names are matched against the ``REGION`` column of ``df_pos``.
+    df_pos : pandas.DataFrame
+        Must contain columns ``REGION``, ``LATITUDE``, and ``LONGITUDE``.
+    metric_label : str, optional
+        Colorbar label (default: ``'MAPE (%)'``).
+    cmap : str or Colormap, optional
+        Matplotlib colormap (default: ``'RdYlGn_r'``).
+    figsize : tuple, optional
+        Figure size per panel (default: ``(7, 6)``).
+    vmin, vmax : float, optional
+        Shared color-scale limits.  Defaults to the 5th/95th percentile
+        across all methods.
+    node_size : int, optional
+        Scatter marker size (default: 350).
+
+    Examples
+    --------
+    >>> errors = {'GATConv': mape_per_node, 'Opera BU': opera_mape}
+    >>> plot_node_errors_map(errors, graph_dataset_train.nodes, data.df_pos)
+    """
+    metric_label = kwargs.get('metric_label', 'MAPE (%)')
+    cmap         = plt.get_cmap(kwargs.get('cmap', 'RdYlGn_r'))
+    node_size    = kwargs.get('node_size', 350)
+    pw, ph       = kwargs.get('figsize', (7, 6))
+
+    n_panels = len(node_errors)
+    all_vals = np.concatenate([np.asarray(v) for v in node_errors.values()])
+    vmin = kwargs.get('vmin', float(np.percentile(all_vals, 5)))
+    vmax = kwargs.get('vmax', float(np.percentile(all_vals, 95)))
+    norm = mcolors.Normalize(vmin=vmin, vmax=vmax)
+
+    # Build a region → (lat, lon) lookup
+    pos_lookup = {row['REGION']: (row['LATITUDE'], row['LONGITUDE'])
+                  for _, row in df_pos.iterrows()}
+
+    fig, axes = plt.subplots(1, n_panels, figsize=(pw * n_panels, ph))
+    if n_panels == 1:
+        axes = [axes]
+
+    for ax, (title, errors) in zip(axes, node_errors.items()):
+        errors = np.asarray(errors)
+        m = Basemap(
+            projection='merc',
+            llcrnrlat=41.0, urcrnrlat=51.5,
+            llcrnrlon=-5.5, urcrnrlon=9.5,
+            resolution='i', ax=ax
+        )
+        m.drawcoastlines(linewidth=0.8, color='#444')
+        m.drawcountries(linewidth=0.8, color='#444')
+        m.drawmapboundary(fill_color='#daeef7')
+        m.fillcontinents(color='#f2f2ee', lake_color='#daeef7')
+
+        for node_idx, node_name in enumerate(nodes):
+            key = node_name  # try exact match first
+            if key not in pos_lookup:
+                # Normalise underscores / spaces
+                key = next((k for k in pos_lookup if k.replace(' ', '_') == node_name.replace(' ', '_')), None)
+            if key is None:
+                continue
+            lat, lon = pos_lookup[key]
+            x, y = m(lon, lat)
+            err = float(errors[node_idx])
+            color = cmap(norm(err))
+            m.scatter(x, y, s=node_size, c=[color], zorder=5,
+                      alpha=0.88, edgecolors='#222', linewidths=0.6)
+            label = node_name.replace('_', ' ').replace('Cote d Azur', 'Côte d\'Azur')
+            ax.annotate(
+                f'{label}\n{err:.2f}%',
+                xy=(x, y), ha='center', va='bottom', fontsize=6,
+                zorder=6, xytext=(0, 10), textcoords='offset points',
+                bbox=dict(boxstyle='round,pad=0.15', fc='white', alpha=0.6, lw=0),
+            )
+        ax.set_title(title, fontsize=12, fontweight='bold', pad=6)
+
+    # Reserve a fixed right margin for the colorbar so it never overlaps a panel.
+    fig.subplots_adjust(right=0.88, wspace=0.06)
+    cbar_ax = fig.add_axes([0.905, 0.18, 0.018, 0.64])
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+    sm.set_array([])
+    cbar = fig.colorbar(sm, cax=cbar_ax)
+    cbar.set_label(metric_label, fontsize=10)
+    plt.show()
+
 def plot_all_graph_maps(graph_list, edge_index, df_pos, **kwargs):
     """
     Plot a grid of graph visualizations with varying edge weights.
