@@ -312,7 +312,7 @@ class Trainer:
                     break
 
             if kwargs.get('plot_loss', False):
-                plot_losses(num_epochs_final, train_losses, val_losses)
+                plot_losses(num_epochs_final, train_losses, val_losses, start_epoch=start_epoch)
         else:
             print("Loading pretrained model.")
             self.model.load_state_dict(torch.load(os.path.join(saving_directory, os.listdir(saving_directory)[0]), map_location=DEVICE))
