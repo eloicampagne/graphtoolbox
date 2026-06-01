@@ -1,4 +1,5 @@
 import copy
+import re
 from graphtoolbox.data.dataset import GraphDataset
 import graphtoolbox.training.metrics
 from graphtoolbox.utils.helper_functions import *
@@ -256,6 +257,30 @@ class Trainer:
                 for k, v in self.model.conv_kwargs.items():
                     saving_directory += f'_{k}{v}'
         self.saving_directory = saving_directory
+
+        # Resume from a partial checkpoint (fewer epochs, same other hyperparams)
+        start_epoch = 0
+        if not force_training and (not os.path.exists(saving_directory) or len(os.listdir(saving_directory)) == 0):
+            parent_dir = os.path.dirname(saving_directory)
+            dir_name   = os.path.basename(saving_directory)
+            m = re.match(r'^(.*_epochs)(\d+)(.*?)$', dir_name)
+            if m and os.path.isdir(parent_dir):
+                prefix, target_epochs, suffix = m.group(1), int(m.group(2)), m.group(3)
+                candidates = []
+                for d in os.listdir(parent_dir):
+                    dm = re.match(rf'^{re.escape(prefix)}(\d+){re.escape(suffix)}$', d)
+                    if dm:
+                        n = int(dm.group(1))
+                        full = os.path.join(parent_dir, d)
+                        if n < target_epochs and os.path.isdir(full) and len(os.listdir(full)) > 0:
+                            candidates.append((n, full))
+                if candidates:
+                    best_n, best_path = max(candidates, key=lambda x: x[0])
+                    ckpt = os.path.join(best_path, os.listdir(best_path)[0])
+                    print(f"Resuming from {best_n}-epoch checkpoint: {ckpt}")
+                    self.model.load_state_dict(torch.load(ckpt, map_location=DEVICE))
+                    start_epoch = best_n
+
         if not os.path.exists(saving_directory) or len(os.listdir(saving_directory)) == 0 or force_training:
             print("Training model...")
             os.makedirs(saving_directory, exist_ok=True)
@@ -264,7 +289,7 @@ class Trainer:
             val_losses = []
             best_loss = float('inf')
             num_epochs_final = self.num_epochs
-            for epoch in tqdm(range(self.num_epochs)):
+            for epoch in tqdm(range(start_epoch, self.num_epochs)):
                 params_filename = 'epoch{}.params'.format(epoch)
                 train_loss = self._run_epoch(optimizer, 'train', self.train_loader, return_attention=False)
                 if self.return_attention:
