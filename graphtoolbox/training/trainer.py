@@ -322,6 +322,13 @@ class Trainer:
             print("Loading pretrained model.")
             self.model.load_state_dict(torch.load(os.path.join(saving_directory, os.listdir(saving_directory)[0]), map_location=DEVICE))
 
+        # Refit WLS projection with validation error variances (diagonal covariance).
+        # Diagonal W is always invertible and naturally downweights a noisy top-level
+        # model without requiring the full — often near-singular — covariance matrix.
+        if self.reconcile:
+            _W = self._compute_validation_error_covariance()
+            self._compute_min_trace_projection(W=_W)
+
         self.batch_size_save = kwargs.get('batch_size_save', self.batch_size)
         self.test_loader = PyGDataLoader(self.dataset_test, shuffle=False, drop_last=False)
         if self.return_attention and save:
@@ -753,21 +760,27 @@ class Trainer:
 
     def _compute_validation_error_covariance(self) -> torch.Tensor:
         """
-        Estimate the forecast error covariance matrix on the validation set.
+        Estimate a diagonal forecast error weight matrix on the validation set.
 
-        Not called automatically — only use this after training if you want to
-        pass a data-driven W to ``_compute_min_trace_projection``. For highly
-        correlated series the full covariance is near-singular; prefer the
-        diagonal (variance-only) version or stick with the identity default.
+        Uses per-series error variance (WLS / variance-scaling) rather than the
+        full covariance matrix.  The full covariance is near-singular for highly
+        correlated regional series, which causes the MinT projection to amplify
+        noise instead of reducing it.
+
+        When an external top-level forecast is available (``top_forecasts_val``),
+        the top row/column of W is set to the external model's validation error
+        variance — not the GNN national-sum variance — so that a poor top-level
+        model is naturally downweighted in the MinT projection.
 
         Returns
         -------
         torch.Tensor
-            Error covariance W of shape [num_nodes+1, num_nodes+1].
+            Diagonal W of shape [num_nodes+1, num_nodes+1].
         """
         self.model.eval()
         num_nodes = self.dataset_train.num_nodes
-        errors = []
+        base_errors_list = []
+        national_true_list = []
 
         with torch.no_grad():
             for batch in self.val_loader:
@@ -789,19 +802,22 @@ class Trainer:
                 y_true = batch.y.reshape(num_nodes, -1)
 
                 y_hat_rescaled = self._rescale_predictions(y_hat)
-                base_errors = y_hat_rescaled.cpu() - y_true.cpu()
+                base_errors_list.append(y_hat_rescaled.cpu() - y_true.cpu())
+                national_true_list.append(y_true.sum(dim=0).cpu())
 
-                top_pred = y_hat_rescaled.sum(dim=0, keepdim=True)
-                top_true = y_true.sum(dim=0, keepdim=True).cpu()
-                top_error = top_pred.cpu() - top_true
+        all_base_errors = torch.cat(base_errors_list, dim=1)   # [num_nodes, T_val]
+        base_vars = all_base_errors.var(dim=1).clamp(min=1e-6)  # [num_nodes]
 
-                errors.append(torch.cat([base_errors, top_error], dim=0))
+        if self.top_forecasts_val is not None:
+            all_national_true = torch.cat(national_true_list)   # [T_val]
+            T_common = min(len(all_national_true), self.top_forecasts_val.shape[0])
+            top_err = self.top_forecasts_val[:T_common].cpu() - all_national_true[:T_common]
+            top_var = max(top_err.var().item(), 1e-6)
+        else:
+            top_var = max(all_base_errors.sum(dim=0).var().item(), 1e-6)
 
-        all_errors = torch.cat(errors, dim=1)
-        centered = all_errors - all_errors.mean(dim=1, keepdim=True)
-        W = (centered @ centered.T) / (all_errors.shape[1] - 1)
-        W = W + 1e-6 * torch.eye(W.shape[0], device=W.device)
-        return W.to(DEVICE)
+        W_diag = torch.cat([base_vars, base_vars.new_tensor([top_var])])
+        return torch.diag(W_diag).to(DEVICE)
 
     def _min_trace_reconciliation(self, preds: torch.Tensor,
                                    top_forecast: Optional[torch.Tensor] = None) -> torch.Tensor:
