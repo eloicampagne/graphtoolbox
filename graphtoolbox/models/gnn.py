@@ -256,6 +256,9 @@ class ConvAdapter(nn.Module):
                 self.last_attention = (None, torch.as_tensor(attn).detach().cpu())
         else:
             out = self.conv(**call)
+            # Some convs (e.g. PANConv) return (node_features, auxiliary) — keep only the tensor
+            if isinstance(out, tuple):
+                out = out[0]
 
         if self.proj is not None:
             out = self.proj(out)
