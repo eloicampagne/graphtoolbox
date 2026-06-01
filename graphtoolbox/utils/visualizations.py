@@ -8,18 +8,20 @@ import pandas as pd
 import seaborn as sns
 import torch
 
-def plot_losses(num_epochs, train_losses, val_losses):
+def plot_losses(num_epochs, train_losses, val_losses, start_epoch=0):
     """
     Plot training and validation losses across epochs.
 
     Parameters
     ----------
     num_epochs : int
-        Total number of training epochs.
+        Total number of training epochs (used as the upper bound of the x-axis).
     train_losses : list[float]
         List of training loss values per epoch.
     val_losses : list[float]
         List of validation loss values per epoch.
+    start_epoch : int, optional
+        First epoch index (non-zero when resuming from a checkpoint).
 
     Notes
     -----
@@ -30,8 +32,9 @@ def plot_losses(num_epochs, train_losses, val_losses):
     --------
     >>> plot_losses(100, train_losses, val_losses)
     """
-    plt.plot(range(num_epochs), train_losses, label='train')
-    plt.plot(range(num_epochs), val_losses, label='valid')
+    epochs = range(start_epoch, start_epoch + len(train_losses))
+    plt.plot(epochs, train_losses, label='train')
+    plt.plot(epochs, val_losses, label='valid')
     plt.xlabel('Number of epochs')
     plt.ylabel('RMSE (MW)')
     plt.legend()
