@@ -11,6 +11,10 @@ from torch_geometric.nn import (
 )
 from torch_geometric.nn.conv import WLConv
 
+# Convolutions whose C++ kernels only support CPU (torch-cluster kNN, torch-sparse ops).
+# ConvAdapter keeps these on CPU permanently so autograd is never broken by device moves.
+_CPU_ONLY_CONVS = {"DynamicEdgeConv", "SplineConv", "PANConv", "XConv", "GravNetConv"}
+
 def _mlp(ch_in, ch_out, hidden=None, act=nn.ReLU, last_act=False):
     hidden = hidden or max(ch_in, ch_out)
     layers = [nn.Linear(ch_in, hidden), act()]
@@ -183,6 +187,17 @@ class ConvAdapter(nn.Module):
         except Exception:
             self._forward_params = set()
 
+    def _apply(self, fn, recurse=True):
+        # PyTorch routes both .to(device) and .cuda() through _apply().
+        # For CPU-only convolutions we temporarily remove self.conv from _modules
+        # so that fn (which may be a device transfer) is never applied to it.
+        if type(self.conv).__name__ in _CPU_ONLY_CONVS:
+            _conv = self._modules.pop('conv')
+            super()._apply(fn, recurse=recurse)
+            self._modules['conv'] = _conv
+            return self
+        return super()._apply(fn, recurse=recurse)
+
     def forward(self, x, edge_index, x0=None, **tensors):
         # DNAConv expects x: [N, L, C]; fallback to L=1 if given [N, C]
         if isinstance(self.conv, DNAConv) and x.dim() == 2:
@@ -216,26 +231,31 @@ class ConvAdapter(nn.Module):
         E = edge_index.size(1)
         dev = x.device
 
+        # CPU-only convolutions are pinned to CPU (see to() override).
+        # We just need to ferry tensors to CPU before the call and bring output back.
+        _run_on_cpu = type(self.conv).__name__ in _CPU_ONLY_CONVS and dev.type != "cpu"
+
         # dummies where required
+        dummy_dev = torch.device("cpu") if _run_on_cpu else dev
         if "pos" in self._forward_params and "pos" not in call:
-            call["pos"] = torch.zeros(x.size(0), 3, device=dev)
+            call["pos"] = torch.zeros(x.size(0), 3, device=dummy_dev)
         if "normal" in self._forward_params and "normal" not in call:
-            call["normal"] = torch.zeros(x.size(0), 3, device=dev)
+            call["normal"] = torch.zeros(x.size(0), 3, device=dummy_dev)
         if "edge_type" in self._forward_params and "edge_type" not in call:
-            call["edge_type"] = torch.zeros(E, dtype=torch.long, device=dev)
+            call["edge_type"] = torch.zeros(E, dtype=torch.long, device=dummy_dev)
         if "pseudo" in self._forward_params and "pseudo" not in call:
             dim = getattr(self.conv, "dim", 3)
-            call["pseudo"] = torch.zeros(E, dim, device=dev)
+            call["pseudo"] = torch.zeros(E, dim, device=dummy_dev)
         if "x_0" in self._forward_params and x0 is not None:
             call["x_0"] = x0
 
         # Some convs hard-require edge_attr; provide a safe default
-        # Note: SignedConv is excluded — it uses pos/neg_edge_index, not edge_attr
+        # Note: SignedConv is excluded - it uses pos/neg_edge_index, not edge_attr
         needs_edge_attr = isinstance(self.conv, (TransformerConv, NNConv)) or \
                           ("edge_attr" in self._forward_params and "edge_attr" not in call)
         if needs_edge_attr and "edge_attr" not in call:
             ed = getattr(self.conv, "edge_dim", 1)
-            call["edge_attr"] = torch.ones(E, ed, device=dev)
+            call["edge_attr"] = torch.ones(E, ed, device=dummy_dev)
 
         # SignedConv uses pos/neg edge indices instead of edge_index
         if isinstance(self.conv, SignedConv):
@@ -243,6 +263,11 @@ class ConvAdapter(nn.Module):
             call.pop("edge_attr", None)
             call["pos_edge_index"] = edge_index
             call["neg_edge_index"] = edge_index
+
+        # Move input tensors to CPU — conv parameters are already there (see to() override).
+        if _run_on_cpu:
+            call = {k: v.contiguous().cpu() if isinstance(v, torch.Tensor) else v
+                    for k, v in call.items()}
 
         # --- attention capture ---
         supports_attention = "return_attention_weights" in self._forward_params
@@ -259,6 +284,10 @@ class ConvAdapter(nn.Module):
             # Some convs (e.g. PANConv) return (node_features, auxiliary) — keep only the tensor
             if isinstance(out, tuple):
                 out = out[0]
+
+        # Move output back to the original device (conv stays on CPU permanently)
+        if _run_on_cpu and isinstance(out, torch.Tensor):
+            out = out.to(dev)
 
         if self.proj is not None:
             out = self.proj(out)
