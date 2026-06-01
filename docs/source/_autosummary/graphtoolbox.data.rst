@@ -1,4 +1,4 @@
-graphtoolbox.data
+﻿graphtoolbox.data
 =================
 
 .. automodule:: graphtoolbox.data
@@ -10,5 +10,6 @@ graphtoolbox.data
    :toctree:
    :recursive:
 
+   builder
    dataset
    preprocessing

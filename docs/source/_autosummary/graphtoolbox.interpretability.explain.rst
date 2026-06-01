@@ -14,6 +14,7 @@ graphtoolbox.interpretability.explain
       compute_ALE_per_node
       compute_ALE_per_node_avg_over_instants
       compute_feature_importances_from_ALE
+      get_group_feature_mats
       plot_ALE
       plot_ALE_avg
       plot_ALE_nodes

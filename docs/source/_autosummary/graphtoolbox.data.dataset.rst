@@ -9,6 +9,5 @@ graphtoolbox.data.dataset
    .. autosummary::
    
       DataClass
-      GraphBuilder
       GraphDataset
    

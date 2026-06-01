@@ -22,6 +22,111 @@ Clone the repository and install the package and dependencies:
    cd GraphToolbox
    pip install .
 
+To unlock the full set of supported convolutions, install the optional PyTorch Geometric extensions that match your PyTorch and platform versions. Replace ``${TORCH}`` and ``${CUDA}`` with the appropriate values (e.g. ``2.5.1`` and ``cpu``):
+
+.. code-block:: bash
+
+   pip install torch-scatter torch-sparse torch-cluster torch-spline-conv \
+       -f https://data.pyg.org/whl/torch-${TORCH}+${CUDA}.html
+
+Without these packages, DynamicEdgeConv, GravNetConv, XConv, PANConv, and SplineConv are unavailable. FusedGATConv additionally requires ``dgNN``, which is not available on all platforms.
+
+Convolutions
+------------
+
+GraphToolbox benchmarks the entire ``torch_geometric.nn.conv`` collection against ``myGNN``, evaluating whether each operator can be instantiated and run end-to-end with standard node-feature inputs and a homogeneous graph structure.
+
+**Legend**
+
+- |green| Working (fully compatible with ``myGNN``)
+- |red| Skipped (requires the ``dgNN`` package, not available on all platforms)
+- |white| Skipped (requires CUDA-specific dependencies or device-restricted libraries)
+
+.. |green| unicode:: U+1F7E2
+.. |red|   unicode:: U+1F534
+.. |white| unicode:: U+26AA
+
+.. list-table::
+   :header-rows: 1
+   :widths: 25 10 65
+
+   * - Convolution Type
+     - Status
+     - Convolutions
+   * - GCN / Spectral
+     - |green|
+     - GCNConv, ChebConv, SGConv, SSGConv, LGConv, GCN2Conv, ClusterGCNConv
+   * - Attention-based
+     - |green|
+     - GATConv, GATv2Conv, SuperGATConv, TransformerConv, AGNNConv, DNAConv
+   * - MPNN / Aggregation
+     - |green|
+     - SAGEConv, GENConv, GraphConv, MFConv, LEConv, SimpleConv, EGConv, GravNetConv
+   * - MLP-based (GIN-style)
+     - |green|
+     - GINConv, GINEConv
+   * - Edge-conditioned
+     - |green|
+     - NNConv, CGConv, GMMConv, GeneralConv, XConv
+   * - Recurrent / Gated
+     - |green|
+     - GatedGraphConv, ARMAConv, TAGConv
+   * - Residual / Deep
+     - |green|
+     - DirGNNConv, AntiSymmetricConv, FiLMConv, ResGatedGraphConv, PDNConv
+   * - Spectral / Poly
+     - |green|
+     - MixHopConv, GPSConv, FeaStConv, SplineConv, PANConv
+   * - Dynamic aggregators
+     - |green|
+     - PNAConv, EdgeConv, DynamicEdgeConv
+   * - Relational
+     - |green|
+     - RGCNConv, RGATConv, FastRGCNConv
+   * - Graph-level
+     - |green|
+     - WLConv, SignedConv
+   * - Missing optional deps
+     - |red|
+     - FusedGATConv (``dgNN``)
+   * - Heterogeneous graphs
+     - |white|
+     - HANConv, HGTConv, HEATConv, HeteroConv
+   * - Point-cloud
+     - |white|
+     - PointNetConv, PointConv, PointGNNConv, PointTransformerConv, PPFConv
+   * - CuGraph (CUDA only)
+     - |white|
+     - CuGraphGATConv, CuGraphRGCNConv, CuGraphSAGEConv
+   * - Hypergraph
+     - |white|
+     - HypergraphConv
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 15 15
+
+   * - Status
+     - Count
+     - Percentage
+   * - |green|
+     - **49**
+     - **77.8 %**
+   * - |red|
+     - **1**
+     - **1.6 %**
+   * - |white|
+     - **13**
+     - **20.6 %**
+   * - **Total Tested**
+     - **63**
+     - **100 %**
+
+FusedGATConv is not broken; it requires the ``dgNN`` package which is not available on all platforms.
+Installing ``torch-cluster``, ``torch-sparse``, and ``torch-spline-conv`` unlocked DynamicEdgeConv, GravNetConv, XConv, PANConv, and SplineConv.
+
+If you spot a missing convolution, find an incompatibility, or want to help extend support, contributions are warmly welcomed. Feel free to open an issue or submit a PR.
+
 Usage
 -----
 
@@ -113,7 +218,7 @@ Special thanks to all contributors of the GraphToolbox project:
 License
 -------
 
-This project is licensed under the GPL License — see the ``LICENSE`` file for details.
+This project is licensed under the GPL License - see the ``LICENSE`` file for details.
 
 
 Documentation

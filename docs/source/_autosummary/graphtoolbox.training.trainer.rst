@@ -1,4 +1,4 @@
-graphtoolbox.training.trainer
+﻿graphtoolbox.training.trainer
 =============================
 
 .. automodule:: graphtoolbox.training.trainer
@@ -9,5 +9,6 @@ graphtoolbox.training.trainer
    .. autosummary::
    
       EarlyStopping
+      RollingTrainer
       Trainer
    
