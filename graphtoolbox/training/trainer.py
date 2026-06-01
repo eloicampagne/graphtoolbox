@@ -192,7 +192,12 @@ class Trainer:
         min_delta : float, default=0.0
             Minimum delta to count as improvement.
         force_training : bool, default=False
-            If True, retrains even if checkpoint exists.
+            If True, retrains from scratch even if a checkpoint exists.
+            If False (default), the trainer first looks for a completed
+            checkpoint at the requested epoch count and loads it directly.
+            When only a shorter checkpoint is found (e.g. 100 epochs exist
+            but 200 are requested), training resumes from that checkpoint
+            for the remaining epochs without restarting from scratch.
         saving_directory : str, optional
             Folder to store model weights.
         plot_loss : bool, optional

@@ -24,6 +24,38 @@ def _mlp(ch_in, ch_out, hidden=None, act=nn.ReLU, last_act=False):
     return nn.Sequential(*layers)
 
 class ConvAdapter(nn.Module):
+    """Wraps any PyG convolution for use inside ``myGNN``.
+
+    Handles argument introspection (only passes kwargs accepted by the conv),
+    optional attention capture via ``last_attention``, output projection for
+    convolutions whose output dimension differs from ``in_dim``, and special
+    cases such as ``WLConv``, ``DNAConv``, ``SignedConv``, and ``FAConv``.
+
+    CPU-pinned convolutions
+    -----------------------
+    A small set of convolutions rely on ``torch-cluster`` or ``torch-sparse``
+    C++ kernels that only run on CPU (``DynamicEdgeConv``, ``GravNetConv``,
+    ``PANConv``, ``XConv``).  ``ConvAdapter`` keeps these permanently on CPU
+    by overriding ``_apply`` so that ``model.to(device)`` never moves them.
+    During the forward pass their inputs are transferred to CPU automatically
+    and the output is moved back to the model device, so the rest of the
+    network is unaffected.
+
+    Parameters
+    ----------
+    conv_class : type
+        A ``torch_geometric.nn.conv`` class (not an instance).
+    in_dim : int
+        Input feature dimension (and expected output dimension).
+    hidden_channels : int
+        Hidden size used when the conv needs an explicit ``hidden_channels``
+        constructor argument.
+    heads : int, optional
+        Number of attention heads (default 1).
+    base_kwargs : dict, optional
+        Extra keyword arguments forwarded to the conv constructor.
+    """
+
     def __init__(self, conv_class, in_dim, hidden_channels, heads=1, base_kwargs=None):
         super().__init__()
         base_kwargs = base_kwargs or {}
