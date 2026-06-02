@@ -433,6 +433,88 @@ class myGNN(nn.Module):
         x = self.fc(x)
         return (x, attentions) if return_attention else x
     
+class GatedMultiConvGNN(nn.Module):
+    """K parallel myGNN branches with a learned per-node gating network.
+
+    The gate is conditioned on node features (e.g. calendar, region,
+    temperature) and produces a per-node softmax distribution over branches.
+    Branch outputs are combined by a weighted sum, giving the model
+    input-conditioned adaptivity without online learning.
+
+    Parameters
+    ----------
+    in_channels : int
+        Number of input node features.
+    hidden_channels : int
+        Hidden dimension shared across all branches.
+    out_channels : int
+        Output dimension per node (e.g. forecast horizon).
+    conv_classes : list[type]
+        Ordered list of PyG convolution classes — one branch per class.
+    num_layers : int, optional
+        Number of conv layers per branch (default: 2).
+    gate_hidden : int, optional
+        Hidden size of the 2-layer gate MLP (default: 64).
+    gate_feat_indices : list[int] or None, optional
+        Indices into the feature vector to use as gate input.
+        ``None`` (default) uses the full feature vector.
+    conv_kwargs_list : list[dict or None] or None, optional
+        Per-branch extra kwargs forwarded to ``myGNN`` (default: all None).
+    """
+
+    def __init__(
+        self,
+        in_channels: int,
+        hidden_channels: int,
+        out_channels: int,
+        conv_classes: list,
+        num_layers: int = 2,
+        gate_hidden: int = 64,
+        gate_feat_indices=None,
+        conv_kwargs_list=None,
+    ):
+        super().__init__()
+        K = len(conv_classes)
+        conv_kwargs_list = conv_kwargs_list or [None] * K
+
+        self.branches = nn.ModuleList([
+            myGNN(
+                in_channels=in_channels,
+                hidden_channels=hidden_channels,
+                out_channels=out_channels,
+                num_layers=num_layers,
+                conv_class=cls,
+                conv_kwargs=kw or {},
+            )
+            for cls, kw in zip(conv_classes, conv_kwargs_list)
+        ])
+
+        gate_in = len(gate_feat_indices) if gate_feat_indices is not None else in_channels
+        self.gate = nn.Sequential(
+            nn.Linear(gate_in, gate_hidden),
+            nn.ReLU(),
+            nn.Linear(gate_hidden, K),
+        )
+
+        self.gate_feat_indices = gate_feat_indices
+        self.K = K
+        self.hidden_channels = hidden_channels
+        self.num_layers = num_layers
+        self.out_channels = out_channels
+
+    def forward(self, x, edge_index, edge_weight=None, return_attention=False, **kwargs):
+        gate_feats = x[:, self.gate_feat_indices] if self.gate_feat_indices is not None else x
+        w = torch.softmax(self.gate(gate_feats), dim=-1)              # [N, K]
+        branch_outs = torch.stack(
+            [b(x, edge_index, edge_weight=edge_weight) for b in self.branches],
+            dim=-1,
+        )                                                               # [N, out_channels, K]
+        out = (branch_outs * w.unsqueeze(1)).sum(-1)                   # [N, out_channels]
+        if return_attention:
+            return out, w
+        return out
+
+
 class AdditiveGraphModel(nn.Module):
     r"""
     Additive Graph Model (GAM-like GNN).
