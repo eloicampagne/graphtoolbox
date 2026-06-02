@@ -68,6 +68,19 @@ class DataClass:
         Whether the files are CSVs (if False, Parquet is assumed). Default is True.
     node_var : str, optional
         Name of the column identifying nodes. If not provided, retrieved from ``data_kwargs``.
+    computed_features : dict, optional
+        Mapping of ``{column_name: callable}`` for derived features.  Each callable
+        receives the full sorted dataframe (all splits concatenated, including any
+        lag columns already added) and must return a same-length Series or array.
+        Example::
+
+            data_kwargs['computed_features'] = {
+                'heat_deg': lambda df: (15 - df['temp']).clip(lower=0),
+                'cool_deg': lambda df: (df['temp'] - 18).clip(lower=0),
+            }
+
+        The resulting columns are appended before train/val/test splitting and
+        can be referenced in ``dataset_kwargs['features_base']`` like any raw column.
     features_to_lag : dict, optional
         Temporal lags to compute, e.g. ``{'temperature': (1, 3)}`` to add columns
         ``temperature_l1``, ``temperature_l2``, ``temperature_l3``.
@@ -154,6 +167,22 @@ class DataClass:
             df_concat = pd.concat([df_concat.reset_index(drop=True), lagged_df.reset_index(drop=True)], axis=1)
             self.df_train_original = df_concat[df_concat['date'].isin(self.df_train_original['date'])]
             self.df_test_original = df_concat[df_concat['date'].isin(self.df_test_original['date'])]
+
+        # Computed features: arbitrary callables that receive the full sorted
+        # dataframe and return a same-length Series / array.  Applied after lags
+        # so they can reference lag columns if needed.
+        # Example entry: {'heat_deg': lambda df: (18 - df['temp']).clip(lower=0)}
+        computed_features = self.data_kwargs.get('computed_features', None)
+        if computed_features:
+            _df = pd.concat(
+                [self.df_train_original, self.df_test_original], axis=0
+            ).sort_values([self.node_var, 'date']).reset_index(drop=True)
+            for col_name, fn in computed_features.items():
+                _df[col_name] = fn(_df).values
+            _train_dates = set(self.df_train_original['date'])
+            _test_dates  = set(self.df_test_original['date'])
+            self.df_train_original = _df[_df['date'].isin(_train_dates)].reset_index(drop=True)
+            self.df_test_original  = _df[_df['date'].isin(_test_dates)].reset_index(drop=True)
 
         day_cut = str(pd.to_datetime(self.df_train_original.date).max() - timedelta(days=365))
         self.day_sup_train = day_cut
