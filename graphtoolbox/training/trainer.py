@@ -1,7 +1,7 @@
 import copy
 import re
 from graphtoolbox.data.dataset import GraphDataset
-import graphtoolbox.training.metrics
+import graphtoolbox.training.metrics as _metrics
 from graphtoolbox.utils.helper_functions import *
 from graphtoolbox.utils.visualizations import *
 import numpy as np
@@ -316,6 +316,9 @@ class Trainer:
                     num_epochs_final = epoch + 1
                     break
 
+            # Reload the best checkpoint — the model in memory is at the last epoch, not the best.
+            self.model.load_state_dict(torch.load(os.path.join(saving_directory, os.listdir(saving_directory)[0]), map_location=DEVICE))
+
             if kwargs.get('plot_loss', False):
                 plot_losses(num_epochs_final, train_losses, val_losses, start_epoch=start_epoch)
         else:
@@ -627,7 +630,7 @@ class Trainer:
                 m = m.squeeze(-1)
             pred_rescaled = pred_rescaled * m.float().to(pred_rescaled.device)
 
-        loss = getattr(graphtoolbox.training.metrics, 'RMSE')(
+        loss = _metrics.RMSE(
             preds=pred_rescaled.cpu().detach().sum(dim=0),
             targets=y_targets.sum(dim=0)
         ).item()
@@ -685,7 +688,7 @@ class Trainer:
         for loss in losses:
             try:
                 eps = 1e-6
-                loss_fn = getattr(graphtoolbox.training.metrics, loss.upper())
+                loss_fn = getattr(_metrics, loss.upper())
                 result = loss_fn(preds=preds.cpu().detach().sum(dim=0) + eps, targets=targets.sum(dim=0).cpu().detach() + eps)
                 unit = "%" if loss.lower() == 'mape' else "MW"
                 val = result.item() * 100 if loss.lower() == 'mape' else result.item()
