@@ -53,9 +53,9 @@ df_pos = pd.DataFrame(
     'LONGITUDE': [3.0635282, 1.0939658, 2.287592, 7.7507127, 
                   -4.4860088, -1.5541362, 1.9086066, 5.0414701, 
                   -0.5800364, 4.8320114, 1.4442469, 5.3699525],
-    'REGION': ['Hauts_de_France', 'Normandie', 'Ile_de_France', 'Grand_Est', 'Bretagne', 'Pays_de_la_Loire', 
-                'Centre_Val_de_Loire', 'Bourgogne_Franche_Comte', 'Nouvelle_Aquitaine', 'Auvergne_Rhone_Alpes', 
-                'Occitanie', 'Provence_Alpes_Cote_d_Azur'],
+    'REGION': ['haut_de_france', 'normandie', 'ile_de_france', 'grand_est', 'bretagne', 'pays_de_loire', 
+                'centre_val_de_loire', 'bourgogne_franche_comte', 'nouvelle_aquitaine', 'auvergne_rhone_alpes', 
+                'occitanie', 'paca'],
     'SUPERFICIE_REGION': [31813, 29906, 12011, 57433, 27208, 32082, 39151, 47784, 83809, 69711, 72724, 31400],
     'POPULATION_REGION': [5987172, 3307286, 12395148, 5542094, 3402932, 3873096, 2564915, 2785393, 6081985,
                           8153233, 6053548, 5131187]
