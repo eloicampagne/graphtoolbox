@@ -23,11 +23,11 @@ extensions = [
 ]
 
 autosummary_generate = True
-autodoc_default_options = {
-    'members': True,
-    'undoc-members': True,
-    'show-inheritance': True,
-}
+# Member documentation is driven by the autosummary module template
+# (_templates/autosummary/module.rst): leaf modules document their members in
+# full, whereas re-exporting subpackages only list their submodules. This keeps
+# each object documented once and avoids ambiguous cross-references.
+autodoc_default_options = {}
 
 
 templates_path = ['_templates']

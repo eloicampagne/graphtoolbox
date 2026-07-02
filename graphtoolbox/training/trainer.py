@@ -1289,14 +1289,16 @@ class RollingTrainer:
 
         Returns
         -------
-        List[Dict[str, Any]] with one entry per window:
-            {
-                "window_index": int,
-                "window_start": Timestamp,
-                "window_end":   Timestamp,
-                "preds":  Tensor[num_nodes, T_eff],
-                "targets":Tensor[num_nodes, T_eff],
-            }
+        list of dict
+            One entry per rolling window, each holding the keys::
+
+                {
+                    "window_index": int,
+                    "window_start": Timestamp,
+                    "window_end":   Timestamp,
+                    "preds":   Tensor[num_nodes, T_eff],
+                    "targets": Tensor[num_nodes, T_eff],
+                }
         """
         results: List[Dict[str, Any]] = []
         windows = self._iter_windows()

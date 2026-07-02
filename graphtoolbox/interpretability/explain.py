@@ -1439,7 +1439,7 @@ def compute_feature_importances_from_ALE(group_outputs, data, graph_dataset_trai
     :type n_bins: int
     :param mode: One of {'global','avg48','per_node_avg48'}.
     :type mode: str
-    :param period: Cycle length for *_avg_over_instants modes.
+    :param period: Cycle length for the ``avg48`` and ``per_node_avg48`` modes.
     :type period: int
     :param align: 'start' or 'end' alignment for windowing.
     :type align: str
