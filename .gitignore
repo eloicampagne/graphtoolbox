@@ -33,5 +33,6 @@ var/
 # Logs
 logs/
 
-# Sphinx build output
+# Sphinx build output and autosummary stubs (regenerated at build time)
 docs/build/
+docs/source/_autosummary/
