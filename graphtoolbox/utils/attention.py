@@ -45,7 +45,7 @@ def load_attention_batches(directory_path: str) -> tuple[torch.Tensor, torch.Ten
     for file in batch_files:
         data = torch.load(os.path.join(directory_path, file), map_location="cpu")
         if 'attention_weights' not in data or 'edge_idx' not in data:
-            print(f"⚠️ Fichier {file} mal formé.")
+            print(f"[WARN] Malformed file {file}, skipping.")
             continue
 
         attn_per_layer = data['attention_weights']  # list len L
@@ -67,7 +67,7 @@ def load_attention_batches(directory_path: str) -> tuple[torch.Tensor, torch.Ten
         raise RuntimeError(f"Aucun dump d'attention trouvé dans {directory_path}")
 
     all_attentions = torch.cat(all_graphs, dim=2)  # [L, H, G_total, E_graph]
-    return all_attentions, edge_index  # edge_index du graphe simple [2, E_graph]
+    return all_attentions, edge_index  # edge_index of the base graph [2, E_graph]
 
 
 def compute_attention_statistics(
@@ -669,8 +669,8 @@ def attention_to_dense(all_attentions: torch.Tensor, edge_index: torch.Tensor, n
     L, H, G, E = all_attentions.shape
     N = int(num_nodes)
     dense = all_attentions.new_zeros((L, H, G, N, N))
-    # broadcasting: [L,H,G,1] vers [L,H,G,E]
-    # scatter par index 2D (src,tgt) sur la dernière dim
+    # broadcasting: [L,H,G,1] to [L,H,G,E]
+    # scatter by 2D index (src,tgt) on the last dim
     for l in range(L):
         for h in range(H):
             for g in range(G):

@@ -81,10 +81,11 @@ Without these packages, DynamicEdgeConv, GravNetConv, XConv, PANConv, and Spline
 Here is a basic example of how to use GraphToolbox:
 
 ```python
-from graphtoolbox.data.dataset import *
-from graphtoolbox.training.trainer import Trainer
-from graphtoolbox.utils.helper_functions import *
-from torch_geometric.nn.models import *
+from torch_geometric.nn import GATConv
+
+from graphtoolbox.data import DataClass, GraphDataset
+from graphtoolbox.models import myGNN
+from graphtoolbox.training import Trainer
 
 # Load datasets
 out_channels = 48

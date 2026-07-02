@@ -19,6 +19,7 @@ dependencies = [
     "torch",
     "networkx",
     "scikit-learn",
+    "scipy",
     "matplotlib",
     "seaborn",
     "colorcet",
@@ -41,10 +42,6 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 
-[project.scripts]
-run_training = "scripts.run_training:main"
-run_evaluation = "scripts.run_evaluation:main"
-
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["graphtoolbox*"]
@@ -55,7 +52,7 @@ dev = ["pytest", "black", "flake8", "mypy"]
 docs = [
     "sphinx",
     "sphinx-rtd-theme",
-    "myst-parser",            # supporte la syntaxe Markdown
+    "myst-parser",            # Markdown syntax support
     "sphinx-autodoc-typehints",
     "sphinx-copybutton",
 ]

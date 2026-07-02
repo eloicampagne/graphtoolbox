@@ -112,7 +112,7 @@ class Optimizer():
                 else:
                     loss = torch.sum(((out - y_s) ** 2) * mask) / mask.sum()
             else:
-                print(f"[WARN] Batch {i} ignoré car aucune cible valide")
+                print(f"[WARN] Skipping batch {i}: no valid target")
                 continue
             del y_s, out
             if mode == 'train':

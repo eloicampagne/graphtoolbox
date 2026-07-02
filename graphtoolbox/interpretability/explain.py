@@ -816,7 +816,7 @@ def _draw_graph_panels(model_name, dataset_name, cfg, vis_mode, panel_data, G_ba
     for ax in axes[len(panel_data):]:
         ax.axis('off')
 
-    fig.suptitle(f'Explanation Graph ({vis_mode}) — {model_name}', fontsize=cfg.fontsize)
+    fig.suptitle(f'Explanation Graph ({vis_mode}): {model_name}', fontsize=cfg.fontsize)
     plt.tight_layout(rect=[0, 0.05, 1, 0.95])
 
     # Colorbar closer (smaller pad) and with larger fonts

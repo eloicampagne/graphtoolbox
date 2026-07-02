@@ -316,7 +316,7 @@ class Trainer:
                     num_epochs_final = epoch + 1
                     break
 
-            # Reload the best checkpoint — the model in memory is at the last epoch, not the best.
+            # Reload the best checkpoint. The model in memory is at the last epoch, not the best.
             self.model.load_state_dict(torch.load(os.path.join(saving_directory, os.listdir(saving_directory)[0]), map_location=DEVICE))
 
             if kwargs.get('plot_loss', False):
@@ -327,7 +327,7 @@ class Trainer:
 
         # Refit WLS projection with validation error variances (diagonal covariance).
         # Diagonal W is always invertible and naturally downweights a noisy top-level
-        # model without requiring the full — often near-singular — covariance matrix.
+        # model without requiring the full, often near-singular, covariance matrix.
         if self.reconcile:
             _W = self._compute_validation_error_covariance()
             self._compute_min_trace_projection(W=_W)
@@ -501,7 +501,7 @@ class Trainer:
                 else:
                     base_loss = torch.sum(((out - y_s) ** 2) * mask) / mask.sum()
             else:
-                print(f"[WARN] Batch {i} ignoré car aucune cible valide")
+                print(f"[WARN] Skipping batch {i}: no valid target")
                 continue
             pred_diff = out[:, None, :] - out[None, :, :]
             norms = torch.norm(pred_diff, p=2, dim=2)
@@ -739,7 +739,7 @@ class Trainer:
         ----------
         W : torch.Tensor, optional
             Weight matrix. Defaults to the identity (OLS / ordinary reconciliation).
-            Pass a custom W to use WLS or full MinT — but beware that the full error
+            Pass a custom W to use WLS or full MinT, but beware that the full error
             covariance can be near-singular for highly correlated series.
 
         Returns
@@ -772,7 +772,7 @@ class Trainer:
 
         When an external top-level forecast is available (``top_forecasts_val``),
         the top row/column of W is set to the external model's validation error
-        variance — not the GNN national-sum variance — so that a poor top-level
+        variance, not the GNN national-sum variance, so that a poor top-level
         model is naturally downweighted in the MinT projection.
 
         Returns
@@ -1035,7 +1035,7 @@ class Trainer:
 
             def _prep(b):
                 # Cast all floating-point attributes to float32 on CPU before
-                # moving to device — MPS rejects float64 tensors outright.
+                # moving to device, since MPS rejects float64 tensors outright.
                 for _attr in ['x', 'y', 'edge_weight']:
                     _t = getattr(b, _attr, None)
                     if _t is not None and _t.is_floating_point():
@@ -1117,7 +1117,7 @@ class Trainer:
             if p is None or t is None:
                 continue
             rows.append(f"{tag:<6} {_rmse(p,t):>12.2f} {_mape(p,t):>10.2f} {_nmae(p,t):>10.2f}")
-        print(f"[Trainer] Top-level {model_type} — national aggregate errors:\n" + "\n".join(rows))
+        print(f"[Trainer] Top-level {model_type} national aggregate errors:\n" + "\n".join(rows))
 
         self.top_forecasts_train = torch.tensor(pred_train, dtype=torch.float32).to(DEVICE)
         self.top_forecasts_val   = torch.tensor(pred_val,   dtype=torch.float32).to(DEVICE) \

@@ -296,7 +296,7 @@ class ConvAdapter(nn.Module):
             call["pos_edge_index"] = edge_index
             call["neg_edge_index"] = edge_index
 
-        # Move input tensors to CPU — conv parameters are already there (see to() override).
+        # Move input tensors to CPU. Conv parameters are already there (see to() override).
         if _run_on_cpu:
             call = {k: v.contiguous().cpu() if isinstance(v, torch.Tensor) else v
                     for k, v in call.items()}
@@ -313,7 +313,7 @@ class ConvAdapter(nn.Module):
                 self.last_attention = (None, torch.as_tensor(attn).detach().cpu())
         else:
             out = self.conv(**call)
-            # Some convs (e.g. PANConv) return (node_features, auxiliary) — keep only the tensor
+            # Some convs (e.g. PANConv) return (node_features, auxiliary). Keep only the tensor
             if isinstance(out, tuple):
                 out = out[0]
 
@@ -450,7 +450,7 @@ class GatedMultiConvGNN(nn.Module):
     out_channels : int
         Output dimension per node (e.g. forecast horizon).
     conv_classes : list[type]
-        Ordered list of PyG convolution classes — one branch per class.
+        Ordered list of PyG convolution classes, one branch per class.
     num_layers : int, optional
         Number of conv layers per branch (default: 2).
     gate_hidden : int, optional

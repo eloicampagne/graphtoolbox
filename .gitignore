@@ -3,8 +3,18 @@ __pycache__
 init.sh
 checkpoints
 checkpoints_optim
+per_instant
+results_*
+benchmark_sota.py
+*.gif
+*.pt
 *.csv
 *.zip
+*.params
+
+# OS / editor cruft
+.DS_Store
+.ipynb_checkpoints/
 
 # Distribution / packaging
 bin/
@@ -22,3 +32,6 @@ var/
 
 # Logs
 logs/
+
+# Sphinx build output
+docs/build/

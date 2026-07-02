@@ -205,6 +205,74 @@ Basic example of how to use GraphToolbox:
    # Evaluate model
    trainer.evaluate()
 
+Expert Aggregation
+------------------
+
+The ``graphtoolbox.aggregation`` module combines several competing forecasts
+into a single one whose weights adapt over time, in the spirit of the ``opera``
+package (Gaillard & Goude). It is useful for blending the GNN forecast with
+external experts such as a top-level XGBoost or GAM model, either sequentially
+(online) or as a static combiner fitted on a history.
+
+The estimator consumes a matrix of expert forecasts of shape ``[T, K]`` (``T``
+time steps, ``K`` experts) and the observations ``[T]``, and exposes the full
+weight trajectory in ``weights_`` (handy for interpretability) as well as the
+final convex weights in ``coefficients_`` for out-of-sample reuse.
+
+.. code-block:: python
+
+   import numpy as np
+   from graphtoolbox.aggregation import Aggregation
+
+   # Toy example: 4 experts of increasing noise around a signal.
+   rng = np.random.default_rng(0)
+   T, K = 1000, 4
+   y = np.sin(np.linspace(0, 30, T)) + 0.5 * np.linspace(0, 1, T)
+   experts = y[:, None] + rng.normal(0, [0.1, 0.3, 0.6, 1.0], size=(T, K))
+
+   # MLpol is parameter-free and a robust default.
+   agg = Aggregation(model="MLpol", loss="square").run(experts, y)
+
+   print(agg.summary())          # aggregated vs best/mean expert loss
+   forecast = agg.prediction_    # aggregated forecast, shape [T]
+   weight_path = agg.weights_    # weight trajectory, shape [T, K]
+
+   # EWA and BOA take a learning rate, auto-calibrated when y is given.
+   ewa = Aggregation(model="EWA").run(experts, y)
+   print("calibrated eta:", ewa.learning_rate_)
+
+Fit on a history and reuse the learned static weights on unseen experts:
+
+.. code-block:: python
+
+   agg = Aggregation(model="MLpol").run(experts[:800], y[:800])
+   future = agg.predict(experts[800:])   # applies agg.coefficients_
+
+For a genuine streaming setting, alternate ``partial_fit`` (to obtain the
+forecast for the current step) and ``update`` (to feed back the observation):
+
+.. code-block:: python
+
+   agg = Aggregation(model="BOA", learning_rate=1.0).reset(n_experts=K)
+   preds = []
+   for t in range(T):
+       preds.append(agg.partial_fit(experts[t]))  # forecast at time t
+       agg.update(y[t])                            # reveal observation
+
+When forecasts are served in batches rather than one step at a time, use
+``block_size``, which follows ``opera``'s ``predict`` / ``update`` split. A
+day-ahead forecast delivered as daily blocks of 48 half-hours commits each
+block with the weights known at its start; once the block is observed the
+weights then advance step by step within it before the next block:
+
+.. code-block:: python
+
+   agg = Aggregation(model="MLpol").run(experts, y, block_size=48)
+
+Available rules are ``"MLpol"`` (default, parameter-free), ``"EWA"`` and
+``"BOA"`` (adaptive, learning-rate based), plus the ``"uniform"`` mean and the
+``"best"`` single-expert oracle as baselines.
+
 Contributing
 ------------
 
