@@ -12,7 +12,44 @@ from tqdm import tqdm
 from typing import List, Tuple, Type, Union
 
 
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
+def _resolve_device() -> torch.device:
+    """Resolve the training device.
+
+    The ``GRAPHTOOLBOX_DEVICE`` environment variable takes precedence (e.g.
+    ``GRAPHTOOLBOX_DEVICE=cpu``); otherwise the fallback order is CUDA, then
+    MPS, then CPU. On small graphs (tens of nodes) CPU is often faster than
+    MPS because kernel-launch overhead dominates; use ``set_device('cpu')``
+    or the environment variable to override in that regime.
+    """
+    env = os.environ.get("GRAPHTOOLBOX_DEVICE")
+    if env:
+        return torch.device(env)
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
+DEVICE = _resolve_device()
+
+
+def set_device(device) -> torch.device:
+    """Override the device used by trainers created afterwards.
+
+    Parameters
+    ----------
+    device : str or torch.device
+        Target device, e.g. ``'cpu'``, ``'cuda'``, ``'mps'``.
+
+    Returns
+    -------
+    torch.device
+        The resolved device now in effect.
+    """
+    global DEVICE
+    DEVICE = torch.device(device)
+    return DEVICE
 class EarlyStopping:
     """
     Implements early stopping to terminate training when validation loss stops improving.
@@ -231,7 +268,7 @@ class Trainer:
         - Uses early stopping with best-checkpoint saving.
         """
         self.num_epochs = kwargs.get('num_epochs', self.model_kwargs['num_epochs'])
-        optimizer = kwargs.get('optimizer', torch.optim.Adam(self.model.parameters(), lr=self.model_kwargs['lr']))
+        optimizer = kwargs.get('optimizer') or torch.optim.Adam(self.model.parameters(), lr=self.model_kwargs['lr'])
         force_training = kwargs.get('force_training', False)
         patience = kwargs.get('patience', 20)
         min_delta = kwargs.get('min_delta', 0.0)
@@ -503,10 +540,14 @@ class Trainer:
             else:
                 print(f"[WARN] Skipping batch {i}: no valid target")
                 continue
-            pred_diff = out[:, None, :] - out[None, :, :]
-            norms = torch.norm(pred_diff, p=2, dim=2)
-            reg_loss = norms.mean()
-            loss = base_loss + self.lam_reg * reg_loss
+            if self.lam_reg:
+                pred_diff = out[:, None, :] - out[None, :, :]
+                reg_loss = torch.norm(pred_diff, p=2, dim=2).mean()
+                loss = base_loss + self.lam_reg * reg_loss
+            else:
+                # Skip the O(N^2 T) pairwise penalty entirely when unused: it would
+                # otherwise be computed and back-propagated for a zero contribution.
+                loss = base_loss
             del y_s
             if mode == 'train':
                 loss.backward()
