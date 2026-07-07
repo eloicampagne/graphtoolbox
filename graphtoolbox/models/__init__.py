@@ -9,6 +9,9 @@ _SYMBOL_MODULES = {
     "AdditiveGraphModel": ".gnn",
     "GCNEncoder": ".gnn",
     "VariationalGNNEncoder": ".gnn",
+    "TemporalGNN": ".temporal",
+    "ConvAdapterTemporal": ".temporal",
+    "lag_sequence_indices": ".temporal",
 }
 
 __getattr__, __dir__, __all__ = install_lazy_exports(__name__, globals(), _SYMBOL_MODULES)
