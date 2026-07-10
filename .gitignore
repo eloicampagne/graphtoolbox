@@ -36,8 +36,3 @@ logs/
 # Sphinx build output and autosummary stubs (regenerated at build time)
 docs/build/
 docs/source/_autosummary/
-# Test / coverage artifacts
-.coverage
-coverage.xml
-htmlcov/
-.pytest_cache/
