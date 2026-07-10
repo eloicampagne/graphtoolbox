@@ -29,7 +29,6 @@ dependencies = [
     "torch-geometric",
     "tqdm",
     "cvxopt",
-    "basemap",
     "optuna",
     "optuna-dashboard",
     "jupyter",
@@ -48,7 +47,11 @@ include = ["graphtoolbox*"]
 
 
 [project.optional-dependencies]
-dev = ["pytest", "black", "flake8", "mypy"]
+# Geographic-map figures only. Basemap is deprecated and lacks wheels for every
+# Python version, so it is kept out of the core dependencies; install with
+# `pip install GraphToolbox[maps]` when you need those plots.
+maps = ["basemap"]
+dev = ["pytest", "pytest-cov", "black", "flake8", "mypy"]
 docs = [
     "sphinx",
     "sphinx-rtd-theme",
