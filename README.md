@@ -1,6 +1,7 @@
 <p><img src="docs/source/_static/banner_toolbox.png" alt="logo" width="1000" /></p>
 
-[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0) 
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+![CI](https://github.com/eloicampagne/GraphToolbox/actions/workflows/ci.yml/badge.svg)
 ![Maintainer](https://img.shields.io/badge/maintainer-E.Campagne-blue) 
 [![Documentation](https://img.shields.io/badge/Documentation-eloicampagne.fr%2Fgraphtoolbox-green)](https://eloicampagne.fr/graphtoolbox)
 
