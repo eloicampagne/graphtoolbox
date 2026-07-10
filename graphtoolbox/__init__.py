@@ -7,6 +7,7 @@ demand, so that lightweight use does not pull in optional heavy dependencies
 - ``graphtoolbox.data``           : dataset construction and preprocessing.
 - ``graphtoolbox.models``         : graph neural network architectures.
 - ``graphtoolbox.training``       : trainers and forecasting metrics.
+- ``graphtoolbox.evaluation``     : significance tests on cached forecasts.
 - ``graphtoolbox.optim``          : hyper-parameter optimisation.
 - ``graphtoolbox.aggregation``    : online expert aggregation.
 - ``graphtoolbox.interpretability``: post-hoc explanation and ALE analysis.

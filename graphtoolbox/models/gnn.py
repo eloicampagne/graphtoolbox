@@ -63,6 +63,9 @@ class ConvAdapter(nn.Module):
         self.in_dim = in_dim
         self.hidden_channels = hidden_channels
         self.heads = heads
+        # For multi-head convs, dimension spanned by the concatenated heads
+        # (heads * per_head). Set below; drives the remainder projection.
+        self._attn_concat_dim = None
         name = conv_class.__name__
 
         try:
@@ -93,13 +96,25 @@ class ConvAdapter(nn.Module):
         if "in_channels" in ctor_params:
             kwargs["in_channels"] = in_dim
         if "out_channels" in ctor_params:
-            if supports_heads and supports_concat and base_kwargs.get("concat", True):
-                if self.heads == 0 or (in_dim % self.heads) != 0:
+            if supports_heads and supports_concat and base_kwargs.get("concat", True) and self.heads and self.heads > 0:
+                # "Attention Is All You Need" convention: the latent width in_dim
+                # is split across heads (per_head = in_dim // heads) and the heads
+                # are concatenated, so total width stays in_dim rather than growing
+                # to in_dim * heads. When in_dim is not a multiple of heads the
+                # concatenation spans heads * per_head and the remaining dimensions
+                # are restored by a projection (PyG heads all share one out_channels,
+                # so a literally larger last head is not expressible), which keeps
+                # arbitrary latent widths available.
+                per_head = in_dim // self.heads
+                if per_head == 0:
+                    # More heads than latent dimensions: fall back to a single
+                    # full-width head (averaged) so the layer still runs.
                     kwargs["out_channels"] = in_dim
                     kwargs["concat"] = False
                 else:
-                    kwargs["out_channels"] = in_dim // self.heads
+                    kwargs["out_channels"] = per_head
                     kwargs["concat"] = True
+                    self._attn_concat_dim = per_head * self.heads
             else:
                 # keep feature size unchanged across layers
                 if name == "MixHopConv":
@@ -211,6 +226,9 @@ class ConvAdapter(nn.Module):
             _oc = kwargs.get("out_channels", max(1, in_dim // 2))
             actual_out = 2 * _oc
             self.proj = nn.Linear(actual_out, in_dim) if actual_out != in_dim else None
+        elif self._attn_concat_dim is not None and self._attn_concat_dim != in_dim:
+            # Heads do not evenly tile in_dim: restore the exact latent width.
+            self.proj = nn.Linear(self._attn_concat_dim, in_dim)
         else:
             self.proj = None
 
@@ -344,13 +362,13 @@ class myGNN(nn.Module):
         self.hidden_channels = hidden_channels
         self.num_layers = num_layers
 
-        try:
-            ctor_params = set(signature(conv_class).parameters.keys())
-        except Exception:
-            ctor_params = set()
-
-        use_heads = "heads" in ctor_params
-        block_dim = self.hidden_channels * (heads if use_heads else 1)
+        # The residual tower runs at a fixed latent width. Following the
+        # "Attention Is All You Need" convention, multi-head convolutions split
+        # this width across their heads (per-head = hidden // heads) instead of
+        # widening the model to hidden * heads, so the head count no longer
+        # inflates capacity or compute. Non-attention convolutions are unaffected,
+        # since block_dim already equalled hidden_channels for them.
+        block_dim = self.hidden_channels
         self.node_encoder = nn.Linear(in_channels, block_dim)
         self.layers = nn.ModuleList()
 

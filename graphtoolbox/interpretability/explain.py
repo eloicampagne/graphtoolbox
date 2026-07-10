@@ -1,7 +1,6 @@
 from dataclasses import dataclass, field
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
-from mpl_toolkits.basemap import Basemap
 import networkx as nx
 import numpy as np
 import os
@@ -13,6 +12,23 @@ from typing import Optional, Any, Dict, List, Tuple
 import warnings
 
 from graphtoolbox.data.dataset import GraphDataset
+
+
+def _require_basemap():
+    """Import Basemap lazily so the package installs and imports without it.
+
+    Basemap only backs the optional explanation-graph maps and is a deprecated
+    dependency without wheels for every Python version. Install it on demand
+    with ``pip install GraphToolbox[maps]``.
+    """
+    try:
+        from mpl_toolkits.basemap import Basemap
+    except ImportError as exc:
+        raise ImportError(
+            "This figure requires Basemap, an optional dependency. Install it "
+            "with `pip install GraphToolbox[maps]` (or `pip install basemap`)."
+        ) from exc
+    return Basemap
 
 @dataclass
 class VisualizationConfig:
@@ -757,6 +773,7 @@ def _draw_graph_panels(model_name, dataset_name, cfg, vis_mode, panel_data, G_ba
 
         pos = nx.get_node_attributes(G, 'pos')
         bm_kwargs = dict(map_kwargs) if map_kwargs is not None else {}
+        Basemap = _require_basemap()
         m = Basemap(resolution=cfg.map_resolution, ax=ax, **bm_kwargs)
         if cfg.draw_coastlines: m.drawcoastlines()
         if cfg.draw_countries: m.drawcountries()

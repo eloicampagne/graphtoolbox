@@ -1,5 +1,6 @@
 import copy
 import re
+from inspect import signature
 from graphtoolbox.data.dataset import GraphDataset
 import graphtoolbox.training.metrics as _metrics
 from graphtoolbox.utils.helper_functions import *
@@ -295,6 +296,20 @@ class Trainer:
             self.heads = 0
         saving_directory = kwargs.get('saving_directory',
                                     f'./checkpoints/{self.model_name}_{self.adj_matrix}/batch{self.batch_size}_hidden{self.hidden_channels}_layers{self.num_layers}_epochs{self.num_epochs}')
+        # Multi-head convolutions change architecture (and state-dict shapes) with
+        # the head count, so encode it in the checkpoint path. Without this a
+        # heads=4 run would resolve to the heads=1 checkpoint, either loading the
+        # wrong weights silently or failing on a shape mismatch. Only convolutions
+        # that actually take a 'heads' argument get the suffix, so non-attention
+        # checkpoints keep their existing paths.
+        _conv_cls = getattr(self.model, 'conv_class', None)
+        if _conv_cls is not None:
+            try:
+                _supports_heads = 'heads' in signature(_conv_cls).parameters
+            except (ValueError, TypeError):
+                _supports_heads = False
+            if _supports_heads:
+                saving_directory += f'_heads{self.heads}'
         if hasattr(self.model, 'conv_kwargs'):
                 for k, v in self.model.conv_kwargs.items():
                     saving_directory += f'_{k}{v}'

@@ -1,12 +1,28 @@
 import colorcet as cc
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
-from mpl_toolkits.basemap import Basemap
 import networkx as nx
 import numpy as np
 import pandas as pd
 import seaborn as sns
 import torch
+
+
+def _require_basemap():
+    """Import Basemap lazily so the package installs and imports without it.
+
+    Basemap only backs the optional geographic-map figures and is a deprecated
+    dependency without wheels for every Python version. Install it on demand
+    with ``pip install GraphToolbox[maps]``.
+    """
+    try:
+        from mpl_toolkits.basemap import Basemap
+    except ImportError as exc:
+        raise ImportError(
+            "This figure requires Basemap, an optional dependency. Install it "
+            "with `pip install GraphToolbox[maps]` (or `pip install basemap`)."
+        ) from exc
+    return Basemap
 
 def plot_losses(num_epochs, train_losses, val_losses, start_epoch=0):
     """
@@ -129,6 +145,7 @@ def plot_graph_map(edge_index: torch.Tensor, edge_weight: torch.Tensor, df_pos: 
             G.add_edge(u, v, weight=weight)
     pos = nx.get_node_attributes(G, 'pos')
     weights = nx.get_edge_attributes(G, 'weight')
+    Basemap = _require_basemap()
     m = Basemap(projection='merc', llcrnrlat=40, urcrnrlat=52, llcrnrlon=-5, urcrnrlon=10, resolution='i', ax=ax)
     m.drawcoastlines()
     m.drawcountries()
@@ -206,6 +223,7 @@ def plot_node_errors_map(node_errors: dict, nodes: list, df_pos: pd.DataFrame, *
     if n_panels == 1:
         axes = [axes]
 
+    Basemap = _require_basemap()
     for ax, (title, errors) in zip(axes, node_errors.items()):
         errors = np.asarray(errors)
         m = Basemap(
