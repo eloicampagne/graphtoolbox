@@ -1,5 +1,6 @@
 <p><img src="docs/source/_static/banner_toolbox.png" alt="logo" width="1000" /></p>
 
+[![PyPI version](https://img.shields.io/pypi/v/graphtoolbox.svg)](https://pypi.org/project/graphtoolbox/)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 ![CI](https://github.com/eloicampagne/GraphToolbox/actions/workflows/ci.yml/badge.svg)
 ![Maintainer](https://img.shields.io/badge/maintainer-E.Campagne-blue) 
@@ -60,13 +61,25 @@ If you spot a missing convolution, find an incompatibility, or want to help exte
 
 ## Installation
 
-To install GraphToolbox, clone the repository and install the dependencies:
+The package is available on [PyPI](https://pypi.org/project/graphtoolbox/):
+
+```sh
+pip install graphtoolbox
+```
+
+Alternatively, install the latest development version from source:
 
 ```sh
 git clone git@github.com:eloicampagne/GraphToolbox.git
 cd GraphToolbox
 pip install .
 ```
+
+The geographic-map figures rely on the deprecated `basemap` package, which is kept out of the core dependencies; install it on demand with `pip install graphtoolbox[maps]`.
+
+### GPU support
+
+GraphToolbox runs on CPU, CUDA, or Apple MPS and selects the device automatically at run time (CUDA first, then MPS, then CPU). Override it with the `GRAPHTOOLBOX_DEVICE` environment variable or `graphtoolbox.training.set_device(...)`. Note that `pip install graphtoolbox` does **not** pin a CUDA build: it installs the default PyTorch wheel for your platform, which is the CUDA build on Linux (used automatically if a compatible GPU and driver are present) and the CPU/MPS build on macOS. To force a specific variant, install `torch` yourself from the [appropriate PyTorch index](https://pytorch.org/get-started/locally/) before installing GraphToolbox.
 
 To unlock the full set of supported convolutions, install the optional PyTorch Geometric extensions that match your PyTorch and platform versions. Replace `${TORCH}` and `${CUDA}` with the appropriate values (e.g. `2.5.1` and `cpu`):
 
