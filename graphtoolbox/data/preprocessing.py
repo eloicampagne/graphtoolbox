@@ -88,5 +88,5 @@ def extract_dummies(df: pd.DataFrame, var_names: np.ndarray) -> pd.DataFrame:
     new_df = df.copy()
     list_to_concat = [new_df] + [pd.get_dummies(new_df[var_name], prefix=var_name, drop_first=True, dtype=float) for var_name in var_names]
     new_df = pd.concat(list_to_concat, axis=1)
-    new_df = new_df.drop(columns=var_names, axis=1)
+    new_df = new_df.drop(columns=var_names)
     return new_df
