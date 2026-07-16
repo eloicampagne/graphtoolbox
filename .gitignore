@@ -16,6 +16,9 @@ benchmark_sota.py
 .DS_Store
 .ipynb_checkpoints/
 
+# Notebook de travail local (dataset 1825 jours)
+examples/netload/example_data1825.ipynb
+
 # Distribution / packaging
 bin/
 build/
