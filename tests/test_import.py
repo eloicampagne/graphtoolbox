@@ -7,7 +7,10 @@ def test_package_version():
 
 
 def test_public_symbols_import():
-    from graphtoolbox.models import myGNN, ConvAdapter, TemporalGNN, AdditiveGraphModel
+    from graphtoolbox.models import (
+        AdditiveGraphModel, ConvAdapter, CovariateSeq2Seq, TemporalGNN,
+        arimax_forecast, myGNN,
+    )
     from graphtoolbox.training import Trainer, MAPE, RMSE, set_device
     from graphtoolbox.evaluation import (
         diebold_mariano, bootstrap_metric, model_confidence_set, pairwise_dm,
@@ -15,6 +18,7 @@ def test_public_symbols_import():
     # reference them so linters do not flag unused imports
     assert all(obj is not None for obj in (
         myGNN, ConvAdapter, TemporalGNN, AdditiveGraphModel,
+        CovariateSeq2Seq, arimax_forecast,
         Trainer, MAPE, RMSE, set_device,
         diebold_mariano, bootstrap_metric, model_confidence_set, pairwise_dm,
     ))

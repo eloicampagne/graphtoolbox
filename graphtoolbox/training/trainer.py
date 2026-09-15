@@ -931,7 +931,10 @@ class Trainer:
         Features: lag-48 (1-day), lag-336 (7-day), EWM-48, EWM-336, and cyclical
         encodings of hour-of-day, day-of-week, and month.  All features are
         computed on the chronologically concatenated train+val+test series so that
-        lag values at split boundaries are correct.  Predictions are stored in
+        lag values at split boundaries are correct.  Every feature is restricted to
+        the information set available at the origin of the forecast block: the two
+        lags are longer than the horizon by construction, and the two EWMs are held
+        at the value they take at that origin.  Predictions are stored in
         ``self.top_forecasts_train``, ``self.top_forecasts_val``, and
         ``self.top_forecasts_test``.
         """
@@ -971,12 +974,21 @@ class Trainer:
         ewm_day_span  = max(2, steps_per_day)
         ewm_week_span = max(2, steps_per_week)
 
+        # Freeze EWMs at each forecast origin to avoid within-horizon leakage.
+        horizon = int(getattr(self.dataset_train, 'out_channels', 1) or 1)
+
         def make_features(s: pd.Series) -> pd.DataFrame:
             df = pd.DataFrame({'y': s.values}, index=s.index)
             df['lag_day']  = df['y'].shift(steps_per_day)
             df['lag_week'] = df['y'].shift(steps_per_week)
-            df['ewm_day']  = df['y'].shift(1).ewm(span=ewm_day_span,  adjust=False).mean()
-            df['ewm_week'] = df['y'].shift(1).ewm(span=ewm_week_span, adjust=False).mean()
+            ewm_day  = df['y'].shift(1).ewm(span=ewm_day_span,  adjust=False).mean()
+            ewm_week = df['y'].shift(1).ewm(span=ewm_week_span, adjust=False).mean()
+            if horizon > 1:
+                block = np.arange(len(df)) // horizon
+                ewm_day  = ewm_day.groupby(block).transform('first')
+                ewm_week = ewm_week.groupby(block).transform('first')
+            df['ewm_day']  = ewm_day
+            df['ewm_week'] = ewm_week
             idx = pd.to_datetime(s.index)
             hour = idx.hour + idx.minute / 60
             df['hour_sin']  = np.sin(2 * np.pi * hour / 24)
@@ -1008,55 +1020,12 @@ class Trainer:
         X_val_s   = scaler.transform(X_val)  if X_val  is not None else None
         X_test_s  = scaler.transform(X_test)
 
-        if model_type == 'ridge':
-            from sklearn.linear_model import RidgeCV
-            mdl = RidgeCV(alphas=[0.1, 1.0, 10.0, 100.0])
-            mdl.fit(X_train_s, y_train)
-            pred_train = mdl.predict(X_train_s)
-            pred_val   = mdl.predict(X_val_s)  if X_val_s  is not None else None
-            pred_test  = mdl.predict(X_test_s)
+        if model_type in {'ridge', 'rf', 'xgb', 'gam'}:
+            from graphtoolbox.models.baseline import fit_tabular_baseline
 
-        elif model_type == 'rf':
-            from sklearn.ensemble import RandomForestRegressor
-            mdl = RandomForestRegressor(n_estimators=200, max_depth=15,
-                                        min_samples_leaf=20, n_jobs=-1, random_state=42)
-            mdl.fit(X_train_s, y_train)
-            pred_train = mdl.predict(X_train_s)
-            pred_val   = mdl.predict(X_val_s)  if X_val_s  is not None else None
-            pred_test  = mdl.predict(X_test_s)
-
-        elif model_type == 'xgb':
-            try:
-                import xgboost as xgb
-            except ImportError:
-                raise ImportError("xgboost is required for top_level_model='xgb'. "
-                                  "Install it with: pip install xgboost")
-            eval_set = [(X_val_s, y_val)] if X_val_s is not None else None
-            mdl = xgb.XGBRegressor(
-                n_estimators=500, learning_rate=0.05, max_depth=6,
-                subsample=0.8, colsample_bytree=0.8,
-                random_state=42, n_jobs=-1, verbosity=0,
-                early_stopping_rounds=20 if eval_set else None,
-            )
-            mdl.fit(X_train_s, y_train, eval_set=eval_set, verbose=False)
-            pred_train = mdl.predict(X_train_s)
-            pred_val   = mdl.predict(X_val_s)  if X_val_s  is not None else None
-            pred_test  = mdl.predict(X_test_s)
-
-        elif model_type == 'gam':
-            try:
-                from pygam import LinearGAM, s as gam_s, l as gam_l
-            except ImportError:
-                raise ImportError("pygam is required for top_level_model='gam'. "
-                                  "Install it with: pip install pygam")
-            # Lag features modelled linearly; calendar features with splines.
-            terms = gam_l(0) + gam_l(1) + gam_l(2) + gam_l(3) \
-                  + gam_s(4) + gam_s(5) + gam_s(6) + gam_s(7) + gam_s(8) + gam_s(9)
-            mdl = LinearGAM(terms)
-            mdl.gridsearch(X_train_s, y_train)
-            pred_train = mdl.predict(X_train_s)
-            pred_val   = mdl.predict(X_val_s)  if X_val_s  is not None else None
-            pred_test  = mdl.predict(X_test_s)
+            mdl, pred_train, pred_val, pred_test = fit_tabular_baseline(
+                model_type, X_train_s, y_train, X_test_s,
+                x_validation=X_val_s, y_validation=y_val)
 
         elif model_type == 'gcn':
             # Small 2-layer GCN trained end-to-end: each node produces a forecast,
