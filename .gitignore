@@ -2,15 +2,33 @@ __pycache__
 *.pyc
 init.sh
 checkpoints
+checkpoints_old
 checkpoints_optim
 per_instant
 results_*
-benchmark_sota.py
 *.gif
 *.pt
 *.csv
 *.zip
 *.params
+examples/load/interpretability_regen/
+examples/load/latent_representations_mlp_gnn.npz
+
+# Keep only the paper outputs needed to reproduce tables and figures.
+# Working results and large checkpoints remain ignored.
+!examples/*/forecasts_paper/
+!examples/*/forecasts_paper/*.npz
+!examples/*/forecasts_paper/*.csv
+!examples/*/forecasts_paper/README.md
+!examples/load/results_identity_graph_ablation/
+!examples/load/results_identity_graph_ablation/*.pt
+!examples/load/results_identity_graph_ablation/*.csv
+!examples/netload/results_additive_netload/
+!examples/netload/results_additive_netload/*.csv
+!examples/netload/results_additive_netload/*.pdf
+!examples/results_cached_statistics/
+!examples/results_cached_statistics/*.csv
+!examples/results_cached_statistics/*.json
 
 # OS / editor cruft
 .DS_Store

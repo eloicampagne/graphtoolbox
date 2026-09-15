@@ -168,6 +168,10 @@ pred_model_test, target_test, edge_index, attention_weights = trainer.train(
 trainer.evaluate()
 ```
 
+## Reproducing the paper
+
+The exact dependency lock, dataset-ready examples, baseline runners, cached forecasts, identity-graph ablation, multi-seed summaries, and interpretation outputs used by the paper are documented in [`examples/REPRODUCIBILITY.md`](examples/REPRODUCIBILITY.md). Classical model implementations live in `graphtoolbox.models.baseline`, while reusable attention, GNNExplainer, and ALE diagnostics live in `graphtoolbox.interpretability`.
+
 ## Contributing
 
 Contributions are welcome! Please fork the repository and submit a pull request.

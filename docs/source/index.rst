@@ -273,6 +273,20 @@ Available rules are ``"MLpol"`` (default, parameter-free), ``"EWA"`` and
 ``"BOA"`` (adaptive, learning-rate based), plus the ``"uniform"`` mean and the
 ``"best"`` single-expert oracle as baselines.
 
+Baselines and interpretability
+------------------------------
+
+The classical forecasting implementations used in the paper are reusable from
+``graphtoolbox.models.baseline``. They include per-slot ARIMA-X and GAM fitting,
+the covariate-conditioned LSTM, XGBoost, Chronos-Bolt, and Chronos-2. Dataset
+assembly and paper-specific formulas remain in ``examples``.
+
+Reusable attribution runners are exposed by ``graphtoolbox.interpretability``:
+``dump_attention_batches`` and ``load_attention_batches`` cache attention,
+``compute_edge_masks`` runs GNNExplainer, and ``plot_ale_group_importance``
+renders grouped ALE diagnostics. The complete reproduction commands and the
+locations of their cached outputs are listed in ``examples/REPRODUCIBILITY.md``.
+
 Contributing
 ------------
 
