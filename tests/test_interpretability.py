@@ -17,7 +17,8 @@ from graphtoolbox.interpretability import (
     compute_ALE, compute_ALE_avg_over_instants, compute_ALE_per_node,
     compute_ALE_per_node_avg_over_instants, ale_scalar_importance,
     plot_ALE, plot_ALE_avg, plot_ALE_nodes, plot_feature_importance_bar,
-    get_group_feature_mats, compute_feature_importances_from_ALE,
+    aggregate_ale_importance, get_group_feature_mats,
+    compute_feature_importances_from_ALE, plot_ale_group_importance,
 )
 from graphtoolbox.data import DataClass, GraphDataset
 
@@ -65,6 +66,16 @@ def test_plots_do_not_raise():
     plot_ALE_nodes(xmn, mat, counts=counts)
     df = pd.DataFrame({"feature": ["a", "b", "c"], "importance": [3.0, 1.0, 2.0]})
     plot_feature_importance_bar(df, top_k=2)
+    grouped_input = pd.DataFrame({
+        "feature": ["a:1", "a:2", "b:1"],
+        "group": ["a", "a", "b"],
+        "importance": [4.0, 2.0, 1.0],
+    })
+    grouped = aggregate_ale_importance(grouped_input)
+    assert np.isclose(grouped["share"].sum(), 1.0)
+    # Mean reduction prevents a larger feature group from winning by count.
+    assert np.isclose(grouped.loc[grouped["group"] == "a", "importance"].item(), 3.0)
+    plot_ale_group_importance(grouped_input)
     matplotlib.pyplot.close("all")
 
 

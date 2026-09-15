@@ -16,6 +16,15 @@ _SYMBOL_MODULES = {
     "ale_scalar_importance": ".explain",
     "compute_feature_importances_from_ALE": ".explain",
     "plot_feature_importance_bar": ".explain",
+    "RegressionExplanationWrapper": ".diagnostics",
+    "make_edge_explainer": ".diagnostics",
+    "compute_edge_masks": ".diagnostics",
+    "topk_indices": ".diagnostics",
+    "explainer_reproducibility": ".diagnostics",
+    "dump_attention_batches": ".diagnostics",
+    "load_attention_batches": ".diagnostics",
+    "aggregate_ale_importance": ".diagnostics",
+    "plot_ale_group_importance": ".diagnostics",
 }
 
 __getattr__, __dir__, __all__ = install_lazy_exports(__name__, globals(), _SYMBOL_MODULES)
