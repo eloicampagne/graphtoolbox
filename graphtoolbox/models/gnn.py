@@ -168,9 +168,9 @@ class ConvAdapter(nn.Module):
             kwargs.setdefault("propagate_dimensions", min(in_dim, 16))
             kwargs.setdefault("k", 3)
 
-        # --- relational convolutions: default to 1 relation ---
+        # Relational convolutions default to one relation.
         if name in ("RGCNConv", "FastRGCNConv", "RGATConv") and "num_relations" in ctor_params:
-            kwargs.setdefault("num_relations", 1)
+            kwargs["num_relations"] = int(base_kwargs.get("num_relations", 1))
 
         # --- convolutions requiring extra constructor arguments ---
         if name == "DynamicEdgeConv" and "nn" in ctor_params:
@@ -385,6 +385,17 @@ class myGNN(nn.Module):
 
     def forward(self, x, edge_index, edge_weight=None, edge_attr=None, return_attention=False, **kwargs):
         batch_vec = kwargs.get("batch", None)
+        # Relation index per edge for relational convolutions.
+        edge_type = kwargs.get("edge_type", None)
+        if edge_type is not None:
+            edge_type = edge_type.to(device=edge_index.device, dtype=torch.long)
+            if edge_type.shape != (edge_index.size(1),):
+                raise ValueError("edge_type must have one entry per edge")
+            num_relations = int(self.conv_kwargs.get("num_relations", 1))
+            relational = self.conv_class.__name__ in ("RGCNConv", "FastRGCNConv", "RGATConv")
+            if relational and edge_type.numel() and (edge_type.min() < 0 or edge_type.max() >= num_relations):
+                raise ValueError(f"edge_type must lie in [0, {num_relations}); "
+                                 "set conv_kwargs={'num_relations': ...}")
         if x.dim() == 3:
             # Rare case: user still passes [N,B,F]
             N_per_graph, B, _ = x.shape
@@ -419,6 +430,7 @@ class myGNN(nn.Module):
             out = layer(
                 x, edge_index,
                 edge_weight=edge_weight,
+                edge_type=edge_type,
                 x0=x0,
                 batch=batch_vec
             )

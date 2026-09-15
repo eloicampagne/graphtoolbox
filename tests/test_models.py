@@ -1,6 +1,7 @@
 """Smoke tests for myGNN and the convolution adapter on a synthetic graph."""
+import pytest
 import torch
-from torch_geometric.nn.conv import GCNConv, GATConv, LEConv, ChebConv
+from torch_geometric.nn.conv import GCNConv, GATConv, LEConv, ChebConv, RGATConv, RGCNConv
 
 from graphtoolbox.models import myGNN
 
@@ -28,6 +29,32 @@ def test_heads_split_keeps_width_fixed():
     p1 = sum(p.numel() for p in myGNN(20, 2, 32, 8, conv_class=GATConv, heads=1).parameters())
     p4 = sum(p.numel() for p in myGNN(20, 2, 32, 8, conv_class=GATConv, heads=4).parameters())
     assert p1 == p4
+
+
+def test_edge_type_reaches_relational_convolutions():
+    x, edge_index, _ = _graph()
+    edge_type = torch.randint(0, 3, (edge_index.size(1),))
+    for cls in (RGCNConv, RGATConv):
+        torch.manual_seed(0)
+        typed = myGNN(20, 1, 32, 1, conv_class=cls, conv_kwargs={"num_relations": 3}).eval()
+        torch.manual_seed(0)
+        single = myGNN(20, 1, 32, 1, conv_class=cls).eval()
+        assert typed.layers[0].conv.conv.num_relations == 3, cls.__name__
+        with torch.no_grad():
+            out = typed(x, edge_index, edge_type=edge_type)
+            shuffled = typed(x, edge_index, edge_type=edge_type.roll(1))
+        assert not torch.allclose(out, shuffled), cls.__name__
+        assert single.layers[0].conv.conv.num_relations == 1
+        with pytest.raises(ValueError):
+            single(x, edge_index, edge_type=edge_type)
+
+
+def test_edge_type_does_not_change_other_convolutions():
+    x, edge_index, _ = _graph()
+    model = myGNN(20, 2, 32, 1, conv_class=GCNConv).eval()
+    with torch.no_grad():
+        assert torch.equal(model(x, edge_index),
+                           model(x, edge_index, edge_type=torch.randint(0, 3, (edge_index.size(1),))))
 
 
 def test_adapter_runs_diverse_operators():
