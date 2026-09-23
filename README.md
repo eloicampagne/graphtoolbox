@@ -182,14 +182,14 @@ Special **thanks** to all contributors of the GraphToolbox project:
 - Itai Zehavi
 
 ## Citation
-If you use the GraphToolbox in your work, please cite the corresponding [paper](https://arxiv.org/pdf/2507.03690v3):
+If you use the GraphToolbox in your work, please cite the corresponding [paper](https://arxiv.org/pdf/2609.24609v1):
 
 ```bibtex
-@article{campagne2025graph,
+@inproceedings{campagne2026graphtoolbox,
     author = {Campagne, Eloi and Amara-Ouali, Yvenn and Goude, Yannig and Kalogeratos, Argyris},
-    title = {Graph Neural Networks for Electricity Load Forecasting},
-    journal={arXiv preprint arXiv:2507.03690},
-    year = {2025},
+    title = {GraphToolbox: A Configurable Python Framework for Graph Neural Network Forecasting},
+    booktitle = {IEEE International Conference on Tools with Artificial Intelligence (ICTAI)},
+    year = {2026},
 }
 ```
 

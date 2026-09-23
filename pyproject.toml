@@ -56,7 +56,7 @@ maps = ["basemap"]
 dev = ["pytest", "pytest-cov", "black", "flake8", "mypy"]
 docs = [
     "sphinx",
-    "sphinx-rtd-theme",
+    "furo",
     "myst-parser",            # Markdown syntax support
     "sphinx-autodoc-typehints",
     "sphinx-copybutton",

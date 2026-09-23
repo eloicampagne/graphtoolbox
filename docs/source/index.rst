@@ -134,10 +134,11 @@ Basic example of how to use GraphToolbox:
 
 .. code-block:: python
 
-   from graphtoolbox.data.dataset import *
-   from graphtoolbox.training.trainer import Trainer
-   from graphtoolbox.utils.helper_functions import *
-   from torch_geometric.nn.models import *
+   from torch_geometric.nn import GATConv
+
+   from graphtoolbox.data import DataClass, GraphDataset
+   from graphtoolbox.models import myGNN
+   from graphtoolbox.training import Trainer
 
    # Load datasets
    out_channels = 48
@@ -165,9 +166,10 @@ Basic example of how to use GraphToolbox:
 
    # Initialize model
    conv_class = GATConv
-   conv_kwargs = {'heads': 2}
+   conv_kwargs = {}
    params = {'num_layers': 3,
              'hidden_channels': 364,
+             'heads': 2,
              'lr': 1e-3,
              'batch_size': 16,
              'adj_matrix': 'gl3sr',
@@ -179,7 +181,8 @@ Basic example of how to use GraphToolbox:
        hidden_channels=params["hidden_channels"],
        out_channels=out_channels,
        conv_class=conv_class,
-       conv_kwargs=conv_kwargs
+       conv_kwargs=conv_kwargs,
+       heads=params["heads"]
    )
 
    # Initialize trainer
@@ -284,8 +287,17 @@ assembly and paper-specific formulas remain in ``examples``.
 Reusable attribution runners are exposed by ``graphtoolbox.interpretability``:
 ``dump_attention_batches`` and ``load_attention_batches`` cache attention,
 ``compute_edge_masks`` runs GNNExplainer, and ``plot_ale_group_importance``
-renders grouped ALE diagnostics. The complete reproduction commands and the
-locations of their cached outputs are listed in ``examples/REPRODUCIBILITY.md``.
+renders grouped ALE diagnostics. The complete reproduction commands and cached
+output locations are listed in the `reproducibility guide`_.
+
+.. _reproducibility guide: https://github.com/eloicampagne/GraphToolbox/blob/main/examples/REPRODUCIBILITY.md
+
+Changelog
+---------
+
+Release notes are maintained in the project `changelog`_.
+
+.. _changelog: https://github.com/eloicampagne/GraphToolbox/blob/main/CHANGELOG.md
 
 Contributing
 ------------
