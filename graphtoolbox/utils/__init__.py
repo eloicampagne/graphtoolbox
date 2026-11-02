@@ -21,6 +21,9 @@ _SYMBOL_MODULES = {
     "get_geodesic_distance": ".helper_functions",
     "get_exponential_similarity": ".helper_functions",
     "build_adjacency_matrix": ".helper_functions",
+    # Reproducibility.
+    "set_seed": ".reproducibility",
+    "loader_generator": ".reproducibility",
     # Attention weight analysis.
     "load_attention_batches": ".attention",
     "compute_attention_statistics": ".attention",

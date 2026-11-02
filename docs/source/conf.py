@@ -10,8 +10,8 @@ sys.path.insert(0, os.path.abspath('../..'))
 project = 'GraphToolbox'
 copyright = '2025–2026, Eloi Campagne'
 author = 'Eloi Campagne'
-version = '0.2'
-release = '0.2.0'
+version = '0.3'
+release = '0.3.0'
 
 # -- General configuration ---------------------------------------------------
 extensions = [

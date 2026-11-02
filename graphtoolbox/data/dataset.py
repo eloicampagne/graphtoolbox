@@ -538,7 +538,9 @@ class GraphDataset:
         if not os.path.exists(adj_path):
             print(f"{self.adj_matrix} is invalid. Using identity matrix.")
             return dense_to_sparse(torch.eye(self.num_nodes))
-        A = torch.tensor(np.loadtxt(adj_path, delimiter=' ', usecols=range(self.num_nodes)))
+        # float32, the dtype of training: float64 weights were cast at every batch.
+        A = torch.tensor(np.loadtxt(adj_path, delimiter=' ', usecols=range(self.num_nodes)),
+                         dtype=torch.float32)
         return dense_to_sparse(A)
     
     def _infer_group_dims(self):

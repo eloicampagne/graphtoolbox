@@ -7,6 +7,7 @@ _SYMBOL_MODULES = {
     "RollingTrainer": ".trainer",
     "EarlyStopping": ".trainer",
     "set_device": ".trainer",
+    "set_seed": ".trainer",
     "MAE": ".metrics",
     "NMAE": ".metrics",
     "MAPE": ".metrics",

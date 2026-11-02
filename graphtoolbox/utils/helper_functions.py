@@ -18,6 +18,87 @@ def clean_dir(directory: str) -> None:
     shutil.rmtree(directory)
     os.makedirs(directory)
 
+def make_adam(params, lr: float, fused: bool = False, **kwargs) -> torch.optim.Optimizer:
+    """
+    Adam, optionally with the fused kernel.
+
+    The default Adam updates the parameters one tensor at a time; on the small
+    models of this package that loop costs as much as the backward pass. The
+    fused kernel (CPU since torch 2.4, CUDA, MPS) does one update for all of
+    them, which shortens a CPU epoch by up to a sixth. It rounds differently,
+    so a fused run differs from an unfused one in the last digits: it is off by
+    default to keep results identical to earlier versions.
+
+    Args:
+        params: Parameters to optimize.
+        lr (float): Learning rate.
+        fused (bool): Use the fused kernel. Falls back to the default
+            implementation when the installed torch does not support it for
+            these parameters.
+        **kwargs: Other arguments of torch.optim.Adam.
+
+    Returns:
+        torch.optim.Adam: The optimizer.
+    """
+    params = list(params)
+    if fused:
+        try:
+            return torch.optim.Adam(params, lr=lr, fused=True, **kwargs)
+        except (RuntimeError, TypeError, ValueError):
+            pass
+    return torch.optim.Adam(params, lr=lr, **kwargs)
+
+def epoch_mean(losses, weights) -> float:
+    """
+    Weighted mean of per-batch losses, read from the device once.
+
+    The epoch loops keep each batch loss as a tensor and call this at the end:
+    one synchronization per epoch instead of one ``.item()`` per batch. The sum
+    runs in Python floats, in batch order, as the per-batch ``.item()`` loop did,
+    so the value is the same to the last digit.
+
+    Args:
+        losses (list of torch.Tensor): Scalar loss of each batch.
+        weights (list of int): Number of graphs in each batch.
+
+    Returns:
+        float: sum(loss * weight) / sum(weight), or 0 if there is no batch.
+    """
+    if not losses:
+        return 0
+    total = 0.0
+    for loss, w in zip(torch.stack(losses).cpu().tolist(), weights):
+        total += loss * w
+    return total / sum(weights)
+
+def batch_guards(dataset) -> "tuple[bool, bool]":
+    """
+    Whether any snapshot of a graph dataset holds a NaN feature or target, and
+    whether any has no valid target.
+
+    A training batch is skipped for these reasons only if one of its snapshots
+    is, so the epoch loops test batches only when the dataset requires it:
+    testing every batch costs a device synchronization per step. GraphDataset
+    replaces NaNs by zeros, so both are usually False.
+
+    Args:
+        dataset: Iterable of torch_geometric Data with ``x``, and optionally
+            ``y_scaled`` and ``mask_y``.
+
+    Returns:
+        tuple of bool: (has_nan, has_empty).
+    """
+    has_nan = has_empty = False
+    for d in dataset:
+        y_s = getattr(d, 'y_scaled', None)
+        has_nan = has_nan or bool(torch.isnan(d.x).any()) or \
+            (y_s is not None and bool(torch.isnan(y_s).any()))
+        m = getattr(d, 'mask_y', None)
+        has_empty = has_empty or (m is not None and bool(m.sum() == 0))
+        if has_nan and has_empty:
+            break
+    return has_nan, has_empty
+
 def batch_y_to_tensor(batch: torch.Tensor, **kwargs) -> torch.Tensor:
     """
     Converts a batch of data to a tensor, organizing elements by modulo num_nodes

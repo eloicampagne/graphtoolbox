@@ -4,6 +4,7 @@ from inspect import signature
 from graphtoolbox.data.dataset import GraphDataset
 import graphtoolbox.training.metrics as _metrics
 from graphtoolbox.utils.helper_functions import *
+from graphtoolbox.utils.reproducibility import set_seed, loader_generator
 from graphtoolbox.utils.visualizations import *
 import numpy as np
 import os
@@ -139,6 +140,13 @@ class Trainer:
             - return_attention (bool): collect attention during validation/test.
             - return_group_outputs (bool): ask additive models to return group-wise contributions.
             - lam_reg (float): graph smoothness regularizer weight (pairwise node prediction L2).
+            - seed (int): seeds the global generators and the training loader. The
+              initial weights are drawn when the model is built, so seed them with
+              graphtoolbox.utils.set_seed before building it.
+            - deterministic (bool): with seed, request deterministic kernels (CPU, CUDA).
+            - fused_adam (bool): fused Adam kernel, faster but not bitwise equal to
+              the default one (see graphtoolbox.utils.helper_functions.make_adam).
+              Default False.
 
     Attributes
     ----------
@@ -173,6 +181,13 @@ class Trainer:
         self.return_group_outputs = kwargs.get('return_group_outputs', False)
         self.lam_reg = kwargs.get('lam_reg', 0)
         self.loss_fn = kwargs.get('loss_fn', 'mse')  # 'mse' or 'nmae'
+        self.fused_adam = kwargs.get('fused_adam', False)
+        # The model is built before the Trainer, so this seed fixes the batch
+        # order, dropout and the internal fits below, not the initial weights:
+        # call set_seed() before building the model for those.
+        self.seed = kwargs.get('seed', None)
+        if self.seed is not None:
+            set_seed(self.seed, deterministic=kwargs.get('deterministic', False))
 
         self.model = model.to(DEVICE)
         self.dataset_train = dataset_train
@@ -198,7 +213,8 @@ class Trainer:
         self.is_trained = False
 
         self.batch_size = batch_size
-        self.train_loader = PyGDataLoader(dataset_train, batch_size=self.batch_size, shuffle=True)
+        self.train_loader = PyGDataLoader(dataset_train, batch_size=self.batch_size, shuffle=True,
+                                          generator=loader_generator(self.seed))
         self.val_loader = PyGDataLoader(dataset_val, batch_size=self.batch_size, shuffle=False)
         self.test_loader = PyGDataLoader(dataset_test, shuffle=False, drop_last=False)
 
@@ -224,7 +240,7 @@ class Trainer:
         num_epochs : int, optional
             Number of epochs to train (default: from model_kwargs).
         optimizer : torch.optim.Optimizer, optional
-            Optimizer (default: Adam with model_kwargs['lr']).
+            Optimizer (default: Adam with model_kwargs['lr'], 1e-3 if absent).
         patience : int, default=20
             Early stopping patience.
         min_delta : float, default=0.0
@@ -269,7 +285,8 @@ class Trainer:
         - Uses early stopping with best-checkpoint saving.
         """
         self.num_epochs = kwargs.get('num_epochs', self.model_kwargs['num_epochs'])
-        optimizer = kwargs.get('optimizer') or torch.optim.Adam(self.model.parameters(), lr=self.model_kwargs['lr'])
+        optimizer = kwargs.get('optimizer') or make_adam(self.model.parameters(), lr=self.model_kwargs.get('lr', 1e-3),
+                                                             fused=self.fused_adam)
         force_training = kwargs.get('force_training', False)
         patience = kwargs.get('patience', 20)
         min_delta = kwargs.get('min_delta', 0.0)
@@ -443,7 +460,10 @@ class Trainer:
         assert mode in ['train', 'eval']
         num_nodes = self.dataset_train.num_nodes
         self.model.train() if mode == 'train' else self.model.eval()
-        total_loss, count = 0.0, 0
+        # Batch losses stay on the device and are read once per epoch (epoch_mean):
+        # a .item() per batch would wait for the accelerator at every step.
+        batch_losses, batch_sizes = [], []
+        has_nan, has_empty = self._batch_guards(loader.dataset)
 
         if save: 
             save_path = f"./attention_matrix/{self.model_name}_{self.adj_matrix}/{dataset_name}_batch{self.batch_size}_hidden{self.hidden_channels}_layers{self.num_layers}_epochs{self.num_epochs}_heads{self.heads}"
@@ -456,40 +476,21 @@ class Trainer:
         attention_batches = 0
 
         # TODO: add dynamic graph condition
-        for i, batch in enumerate(loader):
-            for attr in ['x', 'y_scaled', 'y', 'edge_weight', 'mask_y']:
-                if getattr(batch, attr, None) is not None:
-                    setattr(batch, attr, getattr(batch, attr).to(torch.float32))
-            batch = batch.to(DEVICE)
-            if torch.isnan(batch.x).any() or torch.isnan(batch.y_scaled).any():
-                print(f"[WARN] NaN detected in batch {i}. Skipping batch.")
-                continue
+        # Gradients only in training: evaluation without them builds no autograd
+        # graph, which saves memory and the time to record it.
+        with torch.set_grad_enabled(mode == 'train'):
+            for i, batch in enumerate(loader):
+                for attr in ['x', 'y_scaled', 'y', 'edge_weight', 'mask_y']:
+                    if getattr(batch, attr, None) is not None:
+                        setattr(batch, attr, getattr(batch, attr).to(torch.float32))
+                batch = batch.to(DEVICE)
+                if has_nan and (torch.isnan(batch.x).any() or torch.isnan(batch.y_scaled).any()):
+                    print(f"[WARN] NaN detected in batch {i}. Skipping batch.")
+                    continue
 
-            if (mode == 'eval') and return_attention:
-                if save:
-                    save_path = f"./attention_matrix/{self.model_name}_{self.adj_matrix}/{dataset_name}_batch{self.batch_size}_hidden{self.hidden_channels}_layers{self.num_layers}_epochs{self.num_epochs}_heads{self.heads}/num_batch{i}.pt"
-                    model_out = self.model(
-                        batch.x,
-                        batch.edge_index,
-                        edge_weight=getattr(batch, 'edge_weight', None),
-                        mask=getattr(batch, 'mask_y', None),
-                        return_attention=True,
-                        return_group_outputs=self.return_group_outputs,
-                        batch_size=self.batch_size,
-                        save=True,
-                        save_path=save_path
-                    )
-                    # Forward contract:
-                    # (y_hat) or (y_hat, attention) or (y_hat, group_outputs, attention)
-                    if isinstance(model_out, tuple):
-                        out = model_out[0]
-                        attention_per_group = model_out[-1]
-                    else:
-                        out = model_out
-                    out = out.squeeze().view(-1, num_nodes).T
-                else:
-                    same_size = (getattr(batch, 'num_graphs', None) == self.batch_size)
-                    if same_size:
+                if (mode == 'eval') and return_attention:
+                    if save:
+                        save_path = f"./attention_matrix/{self.model_name}_{self.adj_matrix}/{dataset_name}_batch{self.batch_size}_hidden{self.hidden_channels}_layers{self.num_layers}_epochs{self.num_epochs}_heads{self.heads}/num_batch{i}.pt"
                         model_out = self.model(
                             batch.x,
                             batch.edge_index,
@@ -497,81 +498,104 @@ class Trainer:
                             mask=getattr(batch, 'mask_y', None),
                             return_attention=True,
                             return_group_outputs=self.return_group_outputs,
-                            batch_size=self.batch_size
+                            batch_size=self.batch_size,
+                            save=True,
+                            save_path=save_path
                         )
+                        # Forward contract:
+                        # (y_hat) or (y_hat, attention) or (y_hat, group_outputs, attention)
                         if isinstance(model_out, tuple):
                             out = model_out[0]
-                            dict_attention = model_out[-1]  # attention_per_group
+                            attention_per_group = model_out[-1]
                         else:
                             out = model_out
-                            dict_attention = {}
                         out = out.squeeze().view(-1, num_nodes).T
-
-                        if tot_dict_attention is None:
-                            tot_dict_attention = {k: [v_i.clone() if torch.is_tensor(v_i) else v_i
-                                                      for v_i in v] for k, v in dict_attention.items()}
-                            attention_batches = 1
-                        else:
-                            for k in tot_dict_attention.keys():
-                                for j in range(len(tot_dict_attention[k])):
-                                    a = tot_dict_attention[k][j]
-                                    b = dict_attention.get(k, [None]*len(tot_dict_attention[k]))[j]
-                                    if (a is None) or (b is None):
-                                        continue
-                                    if torch.is_tensor(a) and torch.is_tensor(b) and a.shape == b.shape:
-                                        tot_dict_attention[k][j] = a + b
-                            attention_batches += 1
                     else:
-                        # Fallback: no attention aggregation for irregular batch size
-                        model_out = self.model(
-                            batch.x,
-                            batch.edge_index,
-                            edge_weight=getattr(batch, 'edge_weight', None),
-                            mask=getattr(batch, 'mask_y', None),
-                            return_attention=False,
-                            return_group_outputs=False
-                        )
-                        out = model_out.squeeze().view(-1, num_nodes).T
-            else:
-                # Standard forward (training or eval without attention)
-                model_out = self.model(
-                    batch.x,
-                    batch.edge_index,
-                    edge_weight=getattr(batch, 'edge_weight', None),
-                    mask=getattr(batch, 'mask_y', None),
-                    return_attention=False,
-                    return_group_outputs=False
-                )
-                out = model_out.squeeze().view(-1, num_nodes).T
+                        same_size = (getattr(batch, 'num_graphs', None) == self.batch_size)
+                        if same_size:
+                            model_out = self.model(
+                                batch.x,
+                                batch.edge_index,
+                                edge_weight=getattr(batch, 'edge_weight', None),
+                                mask=getattr(batch, 'mask_y', None),
+                                return_attention=True,
+                                return_group_outputs=self.return_group_outputs,
+                                batch_size=self.batch_size
+                            )
+                            if isinstance(model_out, tuple):
+                                out = model_out[0]
+                                dict_attention = model_out[-1]  # attention_per_group
+                            else:
+                                out = model_out
+                                dict_attention = {}
+                            out = out.squeeze().view(-1, num_nodes).T
+
+                            if tot_dict_attention is None:
+                                tot_dict_attention = {k: [v_i.clone() if torch.is_tensor(v_i) else v_i
+                                                          for v_i in v] for k, v in dict_attention.items()}
+                                attention_batches = 1
+                            else:
+                                for k in tot_dict_attention.keys():
+                                    for j in range(len(tot_dict_attention[k])):
+                                        a = tot_dict_attention[k][j]
+                                        b = dict_attention.get(k, [None]*len(tot_dict_attention[k]))[j]
+                                        if (a is None) or (b is None):
+                                            continue
+                                        if torch.is_tensor(a) and torch.is_tensor(b) and a.shape == b.shape:
+                                            tot_dict_attention[k][j] = a + b
+                                attention_batches += 1
+                        else:
+                            # Fallback: no attention aggregation for irregular batch size
+                            model_out = self.model(
+                                batch.x,
+                                batch.edge_index,
+                                edge_weight=getattr(batch, 'edge_weight', None),
+                                mask=getattr(batch, 'mask_y', None),
+                                return_attention=False,
+                                return_group_outputs=False
+                            )
+                            out = model_out.squeeze().view(-1, num_nodes).T
+                else:
+                    # Standard forward (training or eval without attention)
+                    model_out = self.model(
+                        batch.x,
+                        batch.edge_index,
+                        edge_weight=getattr(batch, 'edge_weight', None),
+                        mask=getattr(batch, 'mask_y', None),
+                        return_attention=False,
+                        return_group_outputs=False
+                    )
+                    out = model_out.squeeze().view(-1, num_nodes).T
  
-            y_s = batch.y_scaled.view(-1, num_nodes).T
-            mask = batch.mask_y.view(-1, num_nodes).T  
-            if mask.sum() > 0:
+                y_s = batch.y_scaled.view(-1, num_nodes).T
+                mask = batch.mask_y.view(-1, num_nodes).T  
+                if has_empty and mask.sum() == 0:
+                    print(f"[WARN] Skipping batch {i}: no valid target")
+                    continue
                 if self.loss_fn == 'nmae':
                     base_loss = (torch.sum(torch.abs(out - y_s) * mask)
                                  / (torch.sum(torch.abs(y_s) * mask) + 1e-6))
                 else:
                     base_loss = torch.sum(((out - y_s) ** 2) * mask) / mask.sum()
-            else:
-                print(f"[WARN] Skipping batch {i}: no valid target")
-                continue
-            if self.lam_reg:
-                pred_diff = out[:, None, :] - out[None, :, :]
-                reg_loss = torch.norm(pred_diff, p=2, dim=2).mean()
-                loss = base_loss + self.lam_reg * reg_loss
-            else:
-                # Skip the O(N^2 T) pairwise penalty entirely when unused: it would
-                # otherwise be computed and back-propagated for a zero contribution.
-                loss = base_loss
-            del y_s
-            if mode == 'train':
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=5.0)
-                optimizer.step()
-                optimizer.zero_grad()
+                if self.lam_reg:
+                    pred_diff = out[:, None, :] - out[None, :, :]
+                    reg_loss = torch.norm(pred_diff, p=2, dim=2).mean()
+                    loss = base_loss + self.lam_reg * reg_loss
+                else:
+                    # Skip the O(N^2 T) pairwise penalty entirely when unused: it would
+                    # otherwise be computed and back-propagated for a zero contribution.
+                    loss = base_loss
+                del y_s
+                if mode == 'train':
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=5.0)
+                    optimizer.step()
+                    optimizer.zero_grad()
  
-            total_loss += loss.item() * batch.num_graphs
-            count += batch.num_graphs
+                batch_losses.append(loss.detach())
+                batch_sizes.append(batch.num_graphs)
+
+        mean_loss = epoch_mean(batch_losses, batch_sizes)
 
         # Finalize attention averaging using only the number of aggregated batches
         if (mode == 'eval') and (return_attention) and (not save) and (tot_dict_attention is not None) and (attention_batches > 0):
@@ -582,15 +606,16 @@ class Trainer:
                         tot_dict_attention[k][j] = v / attention_batches
 
         if (return_attention) and (not save):
-            if count > 0:
-                return (total_loss / count, tot_dict_attention if tot_dict_attention is not None else {})
-            else:
-                return (0, tot_dict_attention if tot_dict_attention is not None else {})
+            return (mean_loss, tot_dict_attention if tot_dict_attention is not None else {})
         else:
-            if count > 0:
-                return total_loss / count
-            else:
-                return 0
+            return mean_loss
+
+    def _batch_guards(self, dataset) -> Tuple[bool, bool]:
+        """``batch_guards(dataset)``, cached per dataset."""
+        cache = self.__dict__.setdefault('_batch_guard_cache', {})
+        if id(dataset) not in cache:
+            cache[id(dataset)] = batch_guards(dataset)
+        return cache[id(dataset)]
 
     def _predict(self, loader: PyGDataLoader, split: str = 'test') -> Tuple[float, torch.Tensor, torch.Tensor]:
         """
@@ -1048,10 +1073,12 @@ class Trainer:
                     return self.conv2(x, edge_index, edge_weight)  # [N_total, out_ch]
 
             _gcn = _GCNNational().to(DEVICE)
-            _opt = torch.optim.Adam(_gcn.parameters(), lr=1e-3, weight_decay=1e-4)
+            _opt = make_adam(_gcn.parameters(), lr=1e-3, weight_decay=1e-4,
+                             fused=self.fused_adam)
 
             _bs = min(32, len(self.dataset_train))
-            _tr_loader  = PyGDataLoader(self.dataset_train, batch_size=_bs, shuffle=True)
+            _tr_loader  = PyGDataLoader(self.dataset_train, batch_size=_bs, shuffle=True,
+                                        generator=loader_generator(self.seed))
             _val_loader = PyGDataLoader(self.dataset_val,   batch_size=_bs, shuffle=False) \
                           if self.dataset_val is not None else None
 
@@ -1170,6 +1197,10 @@ class RollingTrainer:
         size = remaining timestamps.
 
     All windows warm-start from the previous model.
+
+    Reproducibility: ``trainer_kwargs={'seed': s}`` seeds the initial weights
+    of the window-0 model and, through each window's Trainer, its batch order
+    and dropout (``'deterministic': True`` is forwarded as well).
     """
 
     def __init__(
@@ -1387,6 +1418,11 @@ class RollingTrainer:
                     f"test={win_start} → {win_end} (rows={len(test_df_w)}), "
                     f"epochs={num_epochs}"
                 )
+                # The model is built here, before any Trainer, so its initial
+                # weights are seeded here; each window's Trainer reseeds the rest.
+                if init_kwargs.get('seed') is not None:
+                    set_seed(init_kwargs['seed'],
+                             deterministic=init_kwargs.get('deterministic', False))
                 current_model = self.model_class(**self.model_kwargs)
             else:
                 print(
