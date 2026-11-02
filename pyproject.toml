@@ -72,5 +72,5 @@ ignore = ["E203", "W503"]
 
 [project.urls]
 Homepage = "https://eloicampagne.fr/graphtoolbox"
-Repository = "https://github.com/eloicampagne/GraphToolbox"
+Repository = "https://github.com/EDF-Lab/GraphToolbox"
 Documentation = "https://eloicampagne.fr/graphtoolbox"

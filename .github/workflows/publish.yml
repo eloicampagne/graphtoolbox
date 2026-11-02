@@ -9,7 +9,7 @@ jobs:
   build:
     name: Build distribution packages
     runs-on: ubuntu-latest
-    if: github.repository == 'eloicampagne/graphtoolbox'
+    if: github.repository == 'EDF-Lab/GraphToolbox'
 
     steps:
       - name: Checkout repository
