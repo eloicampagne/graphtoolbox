@@ -18,10 +18,15 @@ extensions = [
     "sphinx.ext.autodoc",
     "sphinx.ext.autosummary",
     "sphinx.ext.napoleon",
-    "sphinx.ext.viewcode",
     "sphinx.ext.linkcode",
     "myst_parser",
+    "sphinx_copybutton",
+    "sphinx_design",
 ]
+
+# Copy buttons skip shell and Python prompts.
+copybutton_prompt_text = r">>> |\.\.\. |\$ "
+copybutton_prompt_is_regexp = True
 
 autosummary_generate = True
 # Member documentation is driven by the autosummary module template
@@ -37,8 +42,63 @@ exclude_patterns = []
 # -- Options for HTML output -------------------------------------------------
 html_theme = "furo"
 html_static_path = ['_static']
+html_css_files = [
+    "https://fonts.bunny.net/css?family=crimson-pro:400,400i,600,700",
+    "graphtoolbox.css",
+]
+html_title = f"GraphToolbox {release}"
 
 html_theme_options = {
+    "announcement": (
+        f"GraphToolbox {release}: MinT with a shrunk error covariance, daily online updates, "
+        "attention matched to edges. "
+        "<a href='https://github.com/EDF-Lab/GraphToolbox/blob/main/CHANGELOG.md'>Changelog</a>"
+    ),
+    # Palette of eloicampagne.fr: warm paper, ink, olive links, brown accents; a warm dark variant.
+    "light_css_variables": {
+        "font-stack": '"Crimson Pro", Georgia, serif',
+        "font-stack--headings": '"Crimson Pro", Georgia, serif',
+        "color-foreground-primary": "#2E2E2E",
+        "color-foreground-secondary": "rgba(46, 46, 46, 0.68)",
+        "color-background-primary": "#F5F0E7",
+        "color-background-secondary": "#EFE7DA",
+        "color-background-hover": "rgba(139, 94, 60, 0.08)",
+        "color-background-border": "rgba(139, 94, 60, 0.18)",
+        "color-brand-primary": "#8B5E3C",
+        "color-brand-content": "#607D3B",
+        "color-brand-visited": "#607D3B",
+        "color-sidebar-background": "#EFE7DA",
+        "color-sidebar-link-text--top-level": "#8B5E3C",
+        "color-code-background": "#FFFDF9",
+        "color-inline-code-background": "rgba(139, 94, 60, 0.06)",
+        "color-highlighted-background": "rgba(96, 125, 59, 0.15)",
+        "color-announcement-background": "#8B5E3C",
+        "color-announcement-text": "#F5F0E7",
+        "color-api-name": "#8B5E3C",
+        "color-api-pre-name": "#607D3B",
+    },
+    "dark_css_variables": {
+        "font-stack": '"Crimson Pro", Georgia, serif',
+        "font-stack--headings": '"Crimson Pro", Georgia, serif',
+        "color-foreground-primary": "#E9E2D6",
+        "color-foreground-secondary": "rgba(233, 226, 214, 0.7)",
+        "color-background-primary": "#1E1A15",
+        "color-background-secondary": "#191510",
+        "color-background-hover": "rgba(201, 148, 106, 0.12)",
+        "color-background-border": "rgba(201, 148, 106, 0.22)",
+        "color-brand-primary": "#C9946A",
+        "color-brand-content": "#A3BE78",
+        "color-brand-visited": "#A3BE78",
+        "color-sidebar-background": "#191510",
+        "color-sidebar-link-text--top-level": "#C9946A",
+        "color-code-background": "#26211B",
+        "color-inline-code-background": "rgba(201, 148, 106, 0.1)",
+        "color-highlighted-background": "rgba(163, 190, 120, 0.2)",
+        "color-announcement-background": "#5E3F28",
+        "color-announcement-text": "#F5F0E7",
+        "color-api-name": "#C9946A",
+        "color-api-pre-name": "#A3BE78",
+    },
     "light_logo": "logo_light.png",
     "dark_logo": "logo_dark.png",
     "navigation_with_keys": True,
@@ -104,8 +164,3 @@ def linkcode_resolve(domain, info):
         return f"https://github.com/{github_user}/{github_repo}/blob/{github_branch}/{fn}#L{lineno}-L{lineno + len(source) - 1}"
     except Exception:
         return None
-
-def setup(app):
-    # Pour un fichier local
-    # app.add_css_file("styles.css")
-    pass

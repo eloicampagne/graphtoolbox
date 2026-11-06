@@ -1,19 +1,166 @@
 GraphToolbox
 ============
 
-GraphToolbox is a Python framework on PyTorch Geometric for forecasting time series observed on the nodes of a graph, such as regional electricity load. One configuration-driven pipeline covers graph construction, the choice among the convolution operators of PyTorch Geometric, training, reconciliation, expert aggregation, significance testing and interpretability, so that a benchmark changes one choice at a time.
+.. raw:: html
+
+   <div class="gt-hero">
+     <div>
+       <p class="gt-hero-title">Graph neural network forecasting, one configuration at a time</p>
+       <p class="gt-hero-text">GraphToolbox is a Python framework on PyTorch Geometric for forecasting
+       time series observed on the nodes of a graph, such as regional electricity load. One
+       configuration-driven pipeline covers graph construction, the choice among the convolution
+       operators of PyTorch Geometric, training, reconciliation, expert aggregation, significance
+       testing and interpretability, so that a benchmark changes one choice at a time.</p>
+       <div class="gt-hero-actions">
+         <a class="gt-btn" href="#installation">Install</a>
+         <a class="gt-btn" href="#usage">Quickstart</a>
+         <a class="gt-btn" href="_autosummary/graphtoolbox.html">API reference</a>
+         <a class="gt-btn gt-btn-brown" href="https://github.com/EDF-Lab/GraphToolbox">GitHub</a>
+         <a class="gt-btn gt-btn-brown" href="https://eloicampagne.fr">eloicampagne.fr</a>
+       </div>
+     </div>
+   </div>
+
+How it works
+------------
+
+.. figure:: _static/paper/pipeline.svg
+   :target: _static/paper/pipeline.svg
+   :alt: GraphToolbox pipeline
+   :width: 100%
+
+   Solid arrows carry data from raw series to forecasts and diagnostics. Dashed boxes are the
+   configuration dictionaries of each stage, so that swapping the graph, the convolution or the
+   training regime amounts to editing one field.
 
 Features
 --------
 
-- **Data and graphs**: ``DataClass`` and ``GraphDataset`` build lagged, scaled node samples with train, validation and test splits; ``GraphBuilder`` derives the adjacency from coordinates or from the series themselves (spatial distance, correlation, precision, GL3SR, dynamic time warping), any precomputed adjacency stored as a matrix is loaded by name, and a graph can be selected on validation error.
-- **Models**: ``myGNN`` runs 53 of the 65 convolutions of PyTorch Geometric through one adapter (see `Convolutions`_), ``TemporalGNN`` the recurrent cells of PyTorch Geometric Temporal, and ``AdditiveGraphModel`` an additive graph network whose forecast splits into feature-group contributions.
-- **Training**: ``Trainer`` (early stopping, forecasting metrics, MinT reconciliation), ``Optimizer`` for Optuna searches over the model and the graph, and ``RollingTrainer`` for rolling refits or daily online updates of a trained model.
-- **Reconciliation**: MinT combines the node forecasts with a forecast of their total, fitted by the framework or supplied by the user, with a diagonal or a shrunk full error covariance (see `Reconciliation`_).
-- **Aggregation**: online expert aggregation (MLpol, EWA, BOA) across architectures or seeds, on the total or node by node (see `Expert Aggregation`_).
-- **Evaluation**: Diebold-Mariano tests with Holm correction, moving-block bootstrap and Model Confidence Set, on cached forecasts (``graphtoolbox.evaluation``).
-- **Interpretability**: attention matched to edges, occlusion influence, accumulated local effects, and maps of edge attributions (``graphtoolbox.interpretability``).
-- **Baselines**: ARIMA-X, GAM, LSTM, XGBoost, Chronos-Bolt and Chronos-2 (``graphtoolbox.models.baseline``).
+.. grid:: 1 2 2 2
+   :gutter: 3
+
+   .. grid-item-card:: Data and graphs
+      :link: _autosummary/graphtoolbox.data
+      :link-type: doc
+
+      ``DataClass`` and ``GraphDataset`` build lagged, scaled node samples with train,
+      validation and test splits. ``GraphBuilder`` derives the adjacency from coordinates or
+      from the series (spatial distance, correlation, precision, GL3SR, dynamic time warping),
+      any precomputed adjacency is loaded by name, and a graph can be selected on validation error.
+
+   .. grid-item-card:: Models
+      :link: _autosummary/graphtoolbox.models
+      :link-type: doc
+
+      ``myGNN`` runs 53 of the 65 convolutions of PyTorch Geometric through one adapter,
+      ``TemporalGNN`` the recurrent cells of PyTorch Geometric Temporal, and
+      ``AdditiveGraphModel`` an additive graph network whose forecast splits into
+      feature-group contributions.
+
+   .. grid-item-card:: Training
+      :link: _autosummary/graphtoolbox.training
+      :link-type: doc
+
+      ``Trainer`` handles early stopping, forecasting metrics and MinT reconciliation,
+      ``Optimizer`` runs Optuna searches over the model and the graph, and ``RollingTrainer``
+      refits on rolling windows or updates a trained model every day.
+
+   .. grid-item-card:: Reconciliation
+      :link: _autosummary/graphtoolbox.training.reconciliation
+      :link-type: doc
+
+      MinT makes the node forecasts sum to a forecast of their total, fitted by the framework
+      or supplied by the user, with a diagonal or a shrunk full error covariance.
+
+   .. grid-item-card:: Expert aggregation
+      :link: _autosummary/graphtoolbox.aggregation
+      :link-type: doc
+
+      Online aggregation (MLpol, EWA, BOA) across architectures or seeds, on the total or
+      node by node, following the rules of the ``opera`` package.
+
+   .. grid-item-card:: Evaluation
+      :link: _autosummary/graphtoolbox.evaluation
+      :link-type: doc
+
+      Diebold-Mariano tests with Holm correction, moving-block bootstrap and Model Confidence
+      Set, computed on cached forecasts.
+
+   .. grid-item-card:: Interpretability
+      :link: _autosummary/graphtoolbox.interpretability
+      :link-type: doc
+
+      Attention matched to edges, occlusion influence, accumulated local effects, and maps of
+      edge attributions.
+
+   .. grid-item-card:: Baselines
+      :link: _autosummary/graphtoolbox.models.baseline
+      :link-type: doc
+
+      Reusable references for comparison: ARIMA-X, GAM fitted per forecast slot, an LSTM with
+      covariates, XGBoost, Chronos-Bolt and Chronos-2.
+
+Examples from the paper
+-----------------------
+
+The figures below come from the benchmark on French regional load and net-load of
+`Campagne et al. (2026) <https://arxiv.org/abs/2609.24609>`_, run with GraphToolbox.
+
+.. tab-set::
+
+   .. tab-item:: Sweep
+
+      .. figure:: _static/paper/load_sweep.svg
+         :target: _static/paper/load_sweep.svg
+         :alt: RMSE of the 46 operators of the load sweep
+         :width: 100%
+
+         National RMSE of the 46 operators of the load sweep on the 2019 test year, with
+         block-bootstrap standard errors. Filled markers belong to the 90% Model Confidence Set.
+         Built with ``myGNN``, ``Trainer`` and ``graphtoolbox.evaluation``.
+
+   .. tab-item:: Aggregation
+
+      .. figure:: _static/paper/aggregation.svg
+         :target: _static/paper/aggregation.svg
+         :alt: MLpol weights and cumulative RMSE over 2019
+         :width: 100%
+
+         Top, daily MLpol weights of the five operators with the largest average weight.
+         Bottom, cumulative RMSE of MLpol, the uniform average and the best single operator.
+         Built with ``graphtoolbox.aggregation.Aggregation``.
+
+   .. tab-item:: By region
+
+      .. figure:: _static/paper/regional_mixture.svg
+         :target: _static/paper/regional_mixture.svg
+         :alt: Experts with the largest MLpol weight in each French region
+         :width: 80%
+
+         MLpol run separately in each of the 12 regions: the three experts with the largest
+         mean weight, the heaviest in bold and as the fill colour.
+
+   .. tab-item:: Attention
+
+      .. figure:: _static/paper/attention.svg
+         :target: _static/paper/attention.svg
+         :alt: Attention of GATv2 against occlusion influence on the French regions
+         :width: 100%
+
+         Attention of a GATv2 on the French regions, set against the occlusion influence of each
+         neighbour on the forecast. Built with ``attention_by_snapshot``,
+         ``occlusion_influence`` and ``neighbourhood_deviation``.
+
+   .. tab-item:: Additive model
+
+      .. figure:: _static/paper/ale.svg
+         :target: _static/paper/ale.svg
+         :alt: Feature-group contributions to the net-load forecast
+         :width: 100%
+
+         Contributions of the feature groups of an ``AdditiveGraphModel`` to the national
+         net-load forecast during 4 to 10 February 2019. They sum to the forecast minus a
+         constant baseline.
 
 Installation
 ------------
@@ -121,80 +268,45 @@ If you spot a missing convolution, find an incompatibility, or want to help exte
 Usage
 -----
 
-Basic example of how to use GraphToolbox:
+A GATv2 forecasting the next 48 half-hours of regional load on the DTW graph, reconciled with a
+national XGBoost forecast:
 
 .. code-block:: python
 
-   from torch_geometric.nn import GATConv
+   from torch_geometric.nn import GATv2Conv
 
    from graphtoolbox.data import DataClass, GraphDataset
    from graphtoolbox.models import myGNN
    from graphtoolbox.training import Trainer
 
-   # Load datasets
-   out_channels = 48
-   data = DataClass(path_train='./train.csv',
-                    path_test='./test.csv',
-                    data_kwargs=data_kwargs,
-                    folder_config='.')
+   data_kwargs = {
+       "node_var": "Region",                    # one node per region
+       "features_to_lag": {"load": (1, 48)},    # load of the previous day
+       "dummies": ["Instant", "JourSemaine"],   # one-hot calendar
+       "day_inf_train": "2015-01-01", "day_sup_train": "2018-01-01",
+       "day_inf_val": "2018-01-01", "day_sup_val": "2018-12-31",
+       "day_inf_test": "2019-01-01", "day_sup_test": "2019-12-31",
+   }
+   dataset_kwargs = {
+       "adj_matrix": "dtw",                     # graph read from graph_folder/dtw/
+       "features_base": ["temp", "nebu", "wind", "Instant", "JourSemaine"]
+                        + [f"load_l{t}" for t in range(1, 49)],
+       "target_base": "load",
+   }
+   data = DataClass(path_train="train.csv", path_test="test.csv",
+                    data_kwargs=data_kwargs, folder_config=".")
+   common = dict(data=data, dataset_kwargs=dataset_kwargs, out_channels=48,
+                 graph_folder="../graph_representations")
+   train = GraphDataset(period="train", **common)
+   scalers = dict(scalers_feat=train.scalers_feat, scalers_target=train.scalers_target)
+   val, test = (GraphDataset(period=p, **scalers, **common) for p in ("val", "test"))
 
-   graph_dataset_train = GraphDataset(data=data, period='train',
-                                      graph_folder='../graph_representations',
-                                      dataset_kwargs=dataset_kwargs,
-                                      out_channels=out_channels)
-   graph_dataset_val = GraphDataset(data=data, period='val',
-                                    scalers_feat=graph_dataset_train.scalers_feat,
-                                    scalers_target=graph_dataset_train.scalers_target,
-                                    graph_folder='../graph_representations',
-                                    dataset_kwargs=dataset_kwargs,
-                                    out_channels=out_channels)
-   graph_dataset_test = GraphDataset(data=data, period='test',
-                                     scalers_feat=graph_dataset_train.scalers_feat,
-                                     scalers_target=graph_dataset_train.scalers_target,
-                                     graph_folder='../graph_representations',
-                                     dataset_kwargs=dataset_kwargs,
-                                     out_channels=out_channels)
-
-   # Initialize model
-   conv_class = GATConv
-   conv_kwargs = {}
-   params = {'num_layers': 3,
-             'hidden_channels': 364,
-             'heads': 2,
-             'lr': 1e-3,
-             'batch_size': 16,
-             'adj_matrix': 'gl3sr'}
-
-   model = myGNN(
-       in_channels=graph_dataset_train.num_node_features,
-       num_layers=params["num_layers"],
-       hidden_channels=params["hidden_channels"],
-       out_channels=out_channels,
-       conv_class=conv_class,
-       conv_kwargs=conv_kwargs,
-       heads=params["heads"]
-   )
-
-   # Initialize trainer
-   trainer = Trainer(
-       model=model,
-       dataset_train=graph_dataset_train,
-       dataset_val=graph_dataset_val,
-       dataset_test=graph_dataset_test,
-       batch_size=params["batch_size"],
-       return_attention=False,
-       model_kwargs={'lr': params["lr"], 'num_epochs': 200}
-   )
-
-   # Train model
-   pred_model_test, target_test, edge_index, edge_weight = trainer.train(
-       plot_loss=True,
-       force_training=True,
-       save=False,
-       patience=75
-   )
-
-   # Evaluate model
+   model = myGNN(in_channels=train.num_node_features, num_layers=2, hidden_channels=64,
+                 out_channels=48, conv_class=GATv2Conv)   # any PyG convolution
+   trainer = Trainer(model=model, dataset_train=train, dataset_val=val, dataset_test=test,
+                     batch_size=32, model_kwargs={"lr": 1e-3, "num_epochs": 300},
+                     reconcile=True, top_level_model="xgb")
+   pred, target, edge_index, edge_weight = trainer.train(patience=30, plot_loss=False)
    trainer.evaluate()
 
 Reconciliation

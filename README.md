@@ -93,77 +93,43 @@ Without these packages, DynamicEdgeConv, GravNetConv, XConv, PANConv, and Spline
 
 ## Usage
 
-Here is a basic example of how to use GraphToolbox:
+A GATv2 forecasting the next 48 half-hours of regional load on the DTW graph, reconciled with a national XGBoost forecast:
 
 ```python
-from torch_geometric.nn import GATConv
+from torch_geometric.nn import GATv2Conv
 
 from graphtoolbox.data import DataClass, GraphDataset
 from graphtoolbox.models import myGNN
 from graphtoolbox.training import Trainer
 
-# Load datasets
-out_channels = 48
-data = DataClass(path_train='./train.csv', 
-                 path_test='./test.csv', 
-                 data_kwargs=data_kwargs,
-                 folder_config='.')
+data_kwargs = {
+    "node_var": "Region",                    # one node per region
+    "features_to_lag": {"load": (1, 48)},    # load of the previous day
+    "dummies": ["Instant", "JourSemaine"],   # one-hot calendar
+    "day_inf_train": "2015-01-01", "day_sup_train": "2018-01-01",
+    "day_inf_val": "2018-01-01", "day_sup_val": "2018-12-31",
+    "day_inf_test": "2019-01-01", "day_sup_test": "2019-12-31",
+}
+dataset_kwargs = {
+    "adj_matrix": "dtw",                     # graph read from graph_folder/dtw/
+    "features_base": ["temp", "nebu", "wind", "Instant", "JourSemaine"]
+                     + [f"load_l{t}" for t in range(1, 49)],
+    "target_base": "load",
+}
+data = DataClass(path_train="train.csv", path_test="test.csv",
+                 data_kwargs=data_kwargs, folder_config=".")
+common = dict(data=data, dataset_kwargs=dataset_kwargs, out_channels=48,
+              graph_folder="../graph_representations")
+train = GraphDataset(period="train", **common)
+scalers = dict(scalers_feat=train.scalers_feat, scalers_target=train.scalers_target)
+val, test = (GraphDataset(period=p, **scalers, **common) for p in ("val", "test"))
 
-graph_dataset_train = GraphDataset(data=data, period='train', 
-                                   graph_folder='../graph_representations',
-                                   dataset_kwargs=dataset_kwargs,
-                                   out_channels=out_channels)
-graph_dataset_val = GraphDataset(data=data, period='val', 
-                                 scalers_feat=graph_dataset_train.scalers_feat, 
-                                 scalers_target=graph_dataset_train.scalers_target,
-                                 graph_folder='../graph_representations',
-                                 dataset_kwargs=dataset_kwargs,
-                                 out_channels=out_channels)
-graph_dataset_test = GraphDataset(data=data, period='test',
-                                  scalers_feat=graph_dataset_train.scalers_feat, 
-                                  scalers_target=graph_dataset_train.scalers_target,
-                                  graph_folder='../graph_representations',
-                                  dataset_kwargs=dataset_kwargs,
-                                  out_channels=out_channels)
-
-# Initialize model
-conv_class = GATConv
-conv_kwargs = {'heads': 2}
-params = {'num_layers': 3, 
-          'hidden_channels': 364, 
-          'lr': 1e-3, 
-          'batch_size': 16, 
-          'adj_matrix': 'gl3sr'}
-
-model = myGNN(
-    in_channels=graph_dataset_train.num_node_features,
-    num_layers=params["num_layers"],
-    hidden_channels=params["hidden_channels"],
-    out_channels=out_channels,
-    conv_class=conv_class,
-    conv_kwargs=conv_kwargs
-)
-
-# Initialize trainer
-trainer = Trainer(
-    model=model,
-    dataset_train=graph_dataset_train,
-    dataset_val=graph_dataset_val,
-    dataset_test=graph_dataset_test,
-    batch_size=params["batch_size"],
-    return_attention=False,
-    model_kwargs={'lr': params["lr"], 'num_epochs': 200}
-)
-
-# Train model
-pred_model_test, target_test, edge_index, edge_weight = trainer.train(
-    plot_loss=True,
-    force_training=True,
-    save=False,
-    patience=75
-)
-
-# Evaluate model
+model = myGNN(in_channels=train.num_node_features, num_layers=2, hidden_channels=64,
+              out_channels=48, conv_class=GATv2Conv)   # any PyG convolution
+trainer = Trainer(model=model, dataset_train=train, dataset_val=val, dataset_test=test,
+                  batch_size=32, model_kwargs={"lr": 1e-3, "num_epochs": 300},
+                  reconcile=True, top_level_model="xgb")
+pred, target, edge_index, edge_weight = trainer.train(patience=30, plot_loss=False)
 trainer.evaluate()
 ```
 

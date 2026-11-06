@@ -60,6 +60,7 @@ docs = [
     "myst-parser",            # Markdown syntax support
     "sphinx-autodoc-typehints",
     "sphinx-copybutton",
+    "sphinx-design",
 ]
 
 [tool.black]

@@ -1261,19 +1261,13 @@ class RollingTrainer:
 
     ``update="retrain"`` (default) refits through a ``Trainer``:
 
-    - Window 0:
-        TRAIN = df_train_base
-        VAL   = df_val_base
-        TEST  = first test window
-    - Window k >= 1:
-        TRAIN = df_train_base + test windows 0, ..., k-1   (expanding history)
-        VAL   = df_val_base
-        TEST  = test window k
-      trained for ``num_epochs_update`` epochs with the early stopping of the
-      Trainer on the validation set.
-    - Last window:
-        If remaining timestamps < window_size, a final window is created with
-        size = remaining timestamps.
+    - Window 0: train on ``df_train_base``, validate on ``df_val_base``, and
+      forecast the first test window.
+    - Window k >= 1: train on ``df_train_base`` and test windows 0, ..., k-1
+      (expanding history) for ``num_epochs_update`` epochs, with the early
+      stopping of the Trainer on ``df_val_base``, then forecast test window k.
+    - Last window: if fewer than ``window_size`` timestamps remain, the final
+      window holds them.
 
     ``update="replay"`` takes ``replay_steps`` Adam steps (learning rate
     ``replay_lr``, gradient clipping of the Trainer) after each window, on
