@@ -1,15 +1,19 @@
 GraphToolbox
 ============
 
-GraphToolbox is a Python package designed for graph machine learning focused on electricity load forecasting. It provides tools for data handling, model building, training, evaluation, and visualization.
+GraphToolbox is a Python framework on PyTorch Geometric for forecasting time series observed on the nodes of a graph, such as regional electricity load. One configuration-driven pipeline covers graph construction, the choice among the convolution operators of PyTorch Geometric, training, reconciliation, expert aggregation, significance testing and interpretability, so that a benchmark changes one choice at a time.
 
 Features
 --------
 
-- Data handling and preprocessing for graph datasets.
-- Various graph neural network models including Graph Convolutional Networks (GCNs), GraphSAGE, and Graph Attention Networks (GATs).
-- Training and evaluation utilities for graph-based models.
-- Visualization tools for graph data and model results.
+- **Data and graphs**: ``DataClass`` and ``GraphDataset`` build lagged, scaled node samples with train, validation and test splits; ``GraphBuilder`` derives the adjacency from coordinates or from the series themselves (spatial distance, correlation, precision, GL3SR, dynamic time warping), any precomputed adjacency stored as a matrix is loaded by name, and a graph can be selected on validation error.
+- **Models**: ``myGNN`` runs 53 of the 65 convolutions of PyTorch Geometric through one adapter (see `Convolutions`_), ``TemporalGNN`` the recurrent cells of PyTorch Geometric Temporal, and ``AdditiveGraphModel`` an additive graph network whose forecast splits into feature-group contributions.
+- **Training**: ``Trainer`` (early stopping, forecasting metrics, MinT reconciliation), ``Optimizer`` for Optuna searches over the model and the graph, and ``RollingTrainer`` for rolling refits or daily online updates of a trained model.
+- **Reconciliation**: MinT combines the node forecasts with a forecast of their total, fitted by the framework or supplied by the user, with a diagonal or a shrunk full error covariance (see `Reconciliation`_).
+- **Aggregation**: online expert aggregation (MLpol, EWA, BOA) across architectures or seeds, on the total or node by node (see `Expert Aggregation`_).
+- **Evaluation**: Diebold-Mariano tests with Holm correction, moving-block bootstrap and Model Confidence Set, on cached forecasts (``graphtoolbox.evaluation``).
+- **Interpretability**: attention matched to edges, occlusion influence, accumulated local effects, and maps of edge attributions (``graphtoolbox.interpretability``).
+- **Baselines**: ARIMA-X, GAM, LSTM, XGBoost, Chronos-Bolt and Chronos-2 (``graphtoolbox.models.baseline``).
 
 Installation
 ------------
@@ -183,7 +187,7 @@ Basic example of how to use GraphToolbox:
    )
 
    # Train model
-   pred_model_test, target_test, edge_index, attention_weights = trainer.train(
+   pred_model_test, target_test, edge_index, edge_weight = trainer.train(
        plot_loss=True,
        force_training=True,
        save=False,
@@ -192,6 +196,35 @@ Basic example of how to use GraphToolbox:
 
    # Evaluate model
    trainer.evaluate()
+
+Reconciliation
+--------------
+
+MinT reconciliation makes the node forecasts sum to a forecast of their total,
+weighting each series by its errors on held-out data. With ``reconcile=True``,
+the ``Trainer`` fits a top-level model (``top_level_model="xgb"``, ``"ridge"``,
+``"rf"`` or ``"gam"``) on the lags, the calendar and the national mean of the
+covariates, or takes an external forecast through ``top_forecasts_val`` and
+``top_forecasts_test``. ``reconcile_covariance="diag"`` (default) weights the
+series by their validation error variances; ``"shrink"`` uses their full error
+covariance, shrunk toward its diagonal with the Schafer-Strimmer intensity.
+
+.. code-block:: python
+
+   trainer = Trainer(model=model, dataset_train=graph_dataset_train,
+                     dataset_val=graph_dataset_val, dataset_test=graph_dataset_test,
+                     batch_size=16, reconcile=True, top_level_model="xgb",
+                     reconcile_covariance="shrink")
+
+Cached forecasts can be reconciled without a model:
+
+.. code-block:: python
+
+   from graphtoolbox.training.reconciliation import reconcile
+
+   # base [nodes, T] and top [T] to reconcile; their errors on a validation period.
+   coherent = reconcile(base, top, base_errors_val, top_errors_val, covariance="shrink")
+   total = coherent[-1]          # coherent forecast of the total
 
 Expert Aggregation
 ------------------
@@ -264,15 +297,19 @@ Available rules are ``"MLpol"`` (default, parameter-free), ``"EWA"`` and
 Baselines and interpretability
 ------------------------------
 
-The classical forecasting implementations used in the paper are reusable from
-``graphtoolbox.models.baseline``. They include per-slot ARIMA-X and GAM fitting,
-the covariate-conditioned LSTM, XGBoost, Chronos-Bolt, and Chronos-2. Dataset
-assembly and paper-specific formulas remain in ``examples``.
+Classical forecasting baselines are reusable from ``graphtoolbox.models.baseline``:
+per-slot ARIMA-X and GAM fitting, the covariate-conditioned LSTM, XGBoost,
+Chronos-Bolt and Chronos-2. Dataset assembly, the paper-specific formulas, and the
+pooled and per-node XGBoost and MLP baselines of the paper remain in ``examples``.
 
-Reusable attribution runners are exposed by ``graphtoolbox.interpretability``:
-``dump_attention_batches`` and ``load_attention_batches`` cache attention,
-``compute_edge_masks`` runs GNNExplainer, and ``plot_ale_group_importance``
-renders grouped ALE diagnostics. The complete reproduction commands and cached
+``graphtoolbox.interpretability`` exposes the attribution tools:
+``attention_by_snapshot`` returns the attention of every layer and snapshot,
+matched to edges; ``occlusion_influence`` measures the change of a node's
+forecast when the inputs of another node are replaced by a baseline;
+``neighbourhood_deviation`` and ``sender_variance_share`` summarize them;
+``additive_ale_from_dataset`` computes accumulated local effects through an
+``AdditiveGraphModel``; ``compute_edge_masks`` runs GNNExplainer; and
+``plot_ale_group_importance`` renders grouped ALE diagnostics. The complete reproduction commands and cached
 output locations are listed in the `reproducibility guide`_.
 
 .. _reproducibility guide: https://github.com/eloicampagne/GraphToolbox/blob/main/examples/REPRODUCIBILITY.md

@@ -8,14 +8,18 @@
 
 # GraphToolbox
 
-GraphToolbox is a Python package designed for graph machine learning focused on time-series forecasting. It provides tools for data handling, model building, training, evaluation, and visualization.
+GraphToolbox is a Python framework on PyTorch Geometric for forecasting time series observed on the nodes of a graph, such as regional electricity load. One configuration-driven pipeline covers graph construction, the choice among the convolution operators of PyTorch Geometric, training, reconciliation, expert aggregation, significance testing and interpretability, so that a benchmark changes one choice at a time.
 
 ## Features
 
-- Data handling and preprocessing for graph datasets.
-- Various graph neural network models including Graph Convolutional Networks (GCNs), GraphSAGE and Graph Attention Networks (GATs).
-- Training and evaluation utilities for graph-based models.
-- Visualization tools for graph data and model results.
+- **Data and graphs**: `DataClass` and `GraphDataset` build lagged, scaled node samples with train, validation and test splits; `GraphBuilder` derives the adjacency from coordinates or from the series themselves (spatial distance, correlation, precision, GL3SR, dynamic time warping), any precomputed adjacency stored as a matrix is loaded by name, and a graph can be selected on validation error.
+- **Models**: `myGNN` runs 53 of the 65 convolutions of PyTorch Geometric through one adapter (see the table below), `TemporalGNN` the recurrent cells of PyTorch Geometric Temporal, and `AdditiveGraphModel` an additive graph network whose forecast splits into feature-group contributions.
+- **Training**: `Trainer` (early stopping, forecasting metrics, MinT reconciliation), `Optimizer` for Optuna searches over the model and the graph, and `RollingTrainer` for rolling refits or daily online updates of a trained model.
+- **Reconciliation**: MinT combines the node forecasts with a forecast of their total, fitted by the framework or supplied by the user, with a diagonal or a shrunk full error covariance (`graphtoolbox.training.reconciliation`).
+- **Aggregation**: online expert aggregation (MLpol, EWA, BOA) across architectures or seeds, on the total or node by node (`graphtoolbox.aggregation`).
+- **Evaluation**: Diebold-Mariano tests with Holm correction, moving-block bootstrap and Model Confidence Set, on cached forecasts (`graphtoolbox.evaluation`).
+- **Interpretability**: attention matched to edges, occlusion influence, accumulated local effects, and maps of edge attributions (`graphtoolbox.interpretability`).
+- **Baselines**: ARIMA-X, GAM, LSTM, XGBoost, Chronos-Bolt and Chronos-2 (`graphtoolbox.models.baseline`).
 
 ## Convolutions 
 We benchmarked the entire collection of `torch_geometric.nn.conv` layers against `myGNN`, evaluating whether each operator can be instantiated and run end-to-end with standard node-feature inputs and a homogeneous graph structure.
@@ -152,7 +156,7 @@ trainer = Trainer(
 )
 
 # Train model
-pred_model_test, target_test, edge_index, attention_weights = trainer.train(
+pred_model_test, target_test, edge_index, edge_weight = trainer.train(
     plot_loss=True,
     force_training=True,
     save=False,
@@ -165,7 +169,7 @@ trainer.evaluate()
 
 ## Reproducing the paper
 
-The exact dependency lock, dataset-ready examples, baseline runners, cached forecasts, identity-graph ablation, multi-seed summaries, and interpretation outputs used by the paper are documented in [`examples/REPRODUCIBILITY.md`](examples/REPRODUCIBILITY.md). Classical model implementations live in `graphtoolbox.models.baseline`, while reusable attention, GNNExplainer, and ALE diagnostics live in `graphtoolbox.interpretability`.
+The exact dependency lock, the runners of every table and figure, the cached forecasts, the identity-graph ablation, the multi-seed runs and the interpretability outputs of the paper are documented in [`examples/REPRODUCIBILITY.md`](examples/REPRODUCIBILITY.md). The forecasts of the tables were computed with version 0.3.0, and the interpretability diagnostics, the reconciliations and the daily updates with version 0.3.1. Trained weights are attached to the GitHub release.
 
 ## Contributing
 
@@ -182,7 +186,7 @@ If you use the GraphToolbox in your work, please cite the corresponding [preprin
 ```bibtex
 @misc{campagne2026graphtoolbox,
     author = {Campagne, Eloi and Amara-Ouali, Yvenn and Goude, Yannig and Kalogeratos, Argyris},
-    title = {GraphToolbox: A Configurable Python Framework for Graph Neural Network Forecasting},
+    title = {GraphToolbox: A Configurable Framework for Controlled Benchmarking of Graph Neural Network Forecasting},
     year = {2026},
     eprint = {2609.24609},
     archivePrefix = {arXiv},
