@@ -142,6 +142,11 @@ class Trainer:
             - lam_reg: removed in 0.3.1. Its penalty compared rows of the batch that were not
               nodes and pulled the forecasts of all nodes toward each other; a nonzero value
               raises an error. Use lam_national to penalize the error of the national sum.
+            - reconcile_covariance ({"diag", "shrink"}, default "diag"): estimator of the MinT
+              weight matrix from the validation errors of the nodes and of the top level. "diag"
+              keeps their variances (WLS); "shrink" keeps the full error covariance, shrunk toward
+              its diagonal with the intensity of Schafer and Strimmer (see
+              graphtoolbox.training.reconciliation).
             - top_level_covariates (bool, default True): the top-level model fitted for MinT
               also reads the national mean of the covariates of the dataset at each step
               (weather and calendar indicators, without lagged or lead columns).
@@ -192,6 +197,9 @@ class Trainer:
         if kwargs.get('lam_reg', 0):
             raise ValueError("lam_reg was removed in 0.3.1: its penalty compared rows of the batch "
                              "that were not nodes. Use lam_national to penalize the national error.")
+        self.reconcile_covariance = kwargs.get('reconcile_covariance', 'diag')
+        if self.reconcile_covariance not in ('diag', 'shrink'):
+            raise ValueError("reconcile_covariance must be 'diag' or 'shrink'.")
         self.top_level_covariates = bool(kwargs.get('top_level_covariates', True))
         self.lam_national = float(kwargs.get('lam_national', 0) or 0)
         self._national_w = None
@@ -883,12 +891,12 @@ class Trainer:
 
     def _compute_validation_error_covariance(self) -> torch.Tensor:
         """
-        Estimate a diagonal forecast error weight matrix on the validation set.
+        Estimate the forecast error weight matrix on the validation set.
 
-        Uses per-series error variance (WLS / variance-scaling) rather than the
-        full covariance matrix.  The full covariance is near-singular for highly
-        correlated regional series, which causes the MinT projection to amplify
-        noise instead of reducing it.
+        With ``reconcile_covariance="diag"`` (default), W holds the error variance of
+        each series (WLS / variance scaling). With ``"shrink"``, W is the full error
+        covariance shrunk toward its diagonal (Schafer-Strimmer intensity), which keeps
+        it invertible when the regional errors are strongly correlated.
 
         When an external top-level forecast is available (``top_forecasts_val``),
         the top row/column of W is set to the external model's validation error
@@ -898,7 +906,7 @@ class Trainer:
         Returns
         -------
         torch.Tensor
-            Diagonal W of shape [num_nodes+1, num_nodes+1].
+            W of shape [num_nodes+1, num_nodes+1].
         """
         self.model.eval()
         num_nodes = self.dataset_train.num_nodes
@@ -940,7 +948,15 @@ class Trainer:
             top_err = self.top_forecasts_val[:T_common].cpu() - all_national_true[:T_common]
             top_var = max(top_err.var().item(), 1e-6)
         else:
-            top_var = max(all_base_errors.sum(dim=0).var().item(), 1e-6)
+            T_common = all_base_errors.shape[1]
+            top_err = all_base_errors.sum(dim=0)
+            top_var = max(top_err.var().item(), 1e-6)
+
+        if self.reconcile_covariance == 'shrink':
+            from graphtoolbox.training.reconciliation import error_covariance
+            E = torch.cat([all_base_errors[:, :T_common], top_err.reshape(1, -1)]).double().numpy()
+            W = error_covariance(E, 'shrink')
+            return torch.tensor(W, dtype=torch.float32, device=DEVICE)
 
         W_diag = torch.cat([base_vars, base_vars.new_tensor([top_var])])
         return torch.diag(W_diag).to(DEVICE)

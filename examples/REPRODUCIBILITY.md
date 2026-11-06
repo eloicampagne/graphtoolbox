@@ -91,4 +91,4 @@ All net-load models receive the trajectories of temperature, wind and cloud cove
 
 The figure uses `GATv2Conv` on the `space` graph with seeds 42, 0 and 1, and `GATv2Conv` on the `dtw` graph. The text also uses `GATConv` on `dtw` and both operators with `prior` on `dtw`.
 
-Model implementations of the classical baselines are centralized in `graphtoolbox/models/baseline.py`. The attention and occlusion diagnostics are in `graphtoolbox.interpretability`.
+The ARIMA-X, LSTM, GAM and Chronos baselines use `graphtoolbox/models/baseline.py`; XGBoost and the MLPs are defined in `load/hpo_v030/nongraph_models.py`, and TAM comes from the `tam-ml` package. MinT reconciliation, with either covariance estimator, is in `graphtoolbox.training.reconciliation` and `Trainer(reconcile_covariance=...)`. The attention and occlusion diagnostics are in `graphtoolbox.interpretability`.

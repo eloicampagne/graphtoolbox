@@ -10,7 +10,7 @@ The projection is the one of the Trainer: weighted least squares with a diagonal
 the Trainer itself (external top-level forecasts) and once more offline, which checks that the
 offline function reproduces it; the net-load forecasts are reconciled offline. A second estimator,
 MinT-shrink (full 2018 error covariance with the shrinkage of Schafer and Strimmer), is reported
-alongside. Writes ./mint_tam.json.
+alongside. Both estimators are those of graphtoolbox.training.reconciliation. Writes ./mint_tam.json.
 
 With --top xgb, the top level is instead the national sum of pooled XGBoost (b-global of nongraph_baselines.py
 and netload_nongraph.py), refitted here with its selected configuration and seed 42 on the datasets of the GNN,
@@ -34,6 +34,7 @@ from torch_geometric.nn.conv import FastRGCNConv, GatedGraphConv
 from graphtoolbox.evaluation import diebold_mariano
 from graphtoolbox.models import myGNN
 from graphtoolbox.training import Trainer
+from graphtoolbox.training.reconciliation import reconcile as reconcile_mint
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 EXAMPLES = os.path.dirname(os.path.dirname(HERE))
@@ -48,25 +49,8 @@ def per_node(trainer, dataset, split):
 
 
 def reconcile(base, top, base_err, top_err, kind):
-    """National forecast after projecting [base; top] onto the coherent subspace (MinT/WLS)."""
-    n = base.shape[0]
-    S = np.vstack([np.eye(n), np.ones((1, n))])
-    E = np.vstack([base_err, top_err[None]])
-    if kind == "wls":
-        W = np.diag(E.var(axis=1, ddof=1))
-    else:  # MinT-shrink (Wickramasuriya et al., 2019), shrinkage intensity of Schafer and Strimmer as in hts
-        T = E.shape[1]
-        cov = E @ E.T / T
-        xs = E / np.sqrt(np.diag(cov))[:, None]
-        v = ((xs ** 2) @ (xs ** 2).T - (xs @ xs.T) ** 2 / T) / (T * (T - 1))
-        cor = xs @ xs.T / T
-        np.fill_diagonal(v, 0.0)
-        np.fill_diagonal(cor, 0.0)
-        lam = float(np.clip(v.sum() / (cor ** 2).sum(), 0.0, 1.0))
-        W = lam * np.diag(np.diag(cov)) + (1 - lam) * cov
-    Wi = np.linalg.inv(W)
-    G = np.linalg.solve(S.T @ Wi @ S, S.T @ Wi)
-    return (S @ G @ np.vstack([base, top[None]]))[-1]
+    """National forecast after projecting [base; top] onto the coherent subspace (MinT/WLS or MinT-shrink)."""
+    return reconcile_mint(base, top, base_err, top_err, "diag" if kind == "wls" else kind)[-1]
 
 
 def rmse(p, y):

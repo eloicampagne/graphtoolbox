@@ -13,6 +13,9 @@ _SYMBOL_MODULES = {
     "MAPE": ".metrics",
     "RMSE": ".metrics",
     "BIAS": ".metrics",
+    "reconcile": ".reconciliation",
+    "error_covariance": ".reconciliation",
+    "shrinkage_intensity": ".reconciliation",
 }
 
 __getattr__, __dir__, __all__ = install_lazy_exports(__name__, globals(), _SYMBOL_MODULES)

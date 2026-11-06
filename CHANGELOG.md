@@ -4,6 +4,11 @@
 
 ### Added
 
+- `graphtoolbox.training.reconciliation`: MinT reconciliation of node forecasts with a forecast of
+  their total, from held-out errors, usable on cached forecasts (`reconcile`). The weight matrix
+  holds either the error variances (`"diag"`) or the full error covariance shrunk toward its
+  diagonal with the intensity of Schafer and Strimmer (`"shrink"`, `shrinkage_intensity`).
+  `Trainer(reconcile_covariance="shrink")` uses the second estimator; the default stays `"diag"`.
 - `graphtoolbox.interpretability.additive_ale` and `additive_ale_from_dataset`: first-order
   accumulated local effects (Apley and Zhu, 2020) of an input feature of an
   `AdditiveGraphModel`, evaluated through the model. The feature of one node is moved across

@@ -222,3 +222,27 @@ def test_national_loss_trains(datasets):
                       reconcile=False, lam_national=1.0)
     pred, *_ = trainer.train(force_training=True, patience=1)
     assert bool(np.isfinite(pred.detach().cpu().numpy()).all())
+
+
+@pytest.mark.parametrize("covariance", ["diag", "shrink"])
+def test_trainer_reconciles_with_either_covariance(datasets, covariance):
+    train, val, test = datasets
+    seed_everything(0)
+    model = myGNN(in_channels=train.num_node_features, num_layers=1,
+                  hidden_channels=8, out_channels=OUT_CHANNELS, conv_class=GCNConv)
+    t = Trainer(model=model, dataset_train=train, dataset_val=val, dataset_test=test,
+                batch_size=8, model_kwargs={"lr": 1e-2, "num_epochs": 1}, reconcile=True,
+                top_level_model="ridge", reconcile_covariance=covariance)
+    pred, target = t.train(plot_loss=False, force_training=True, save=False)[:2]
+    W = t.W.detach().cpu().numpy()
+    assert np.isfinite(pred.detach().cpu().numpy()).all()
+    assert np.allclose(W, np.diag(np.diag(W))) == (covariance == "diag")
+
+
+def test_trainer_rejects_unknown_covariance(datasets):
+    train, val, test = datasets
+    model = myGNN(in_channels=train.num_node_features, num_layers=1,
+                  hidden_channels=8, out_channels=OUT_CHANNELS, conv_class=GCNConv)
+    with pytest.raises(ValueError, match="reconcile_covariance"):
+        Trainer(model=model, dataset_train=train, dataset_val=val, dataset_test=test,
+                batch_size=8, reconcile=True, top_level_model="ridge", reconcile_covariance="full")
