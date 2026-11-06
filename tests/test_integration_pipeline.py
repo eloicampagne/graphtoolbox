@@ -9,6 +9,7 @@ and the reconciliation projection in one pass.
 import numpy as np
 import pandas as pd
 import pytest
+import torch
 from torch_geometric.nn.conv import GCNConv, GATConv
 from torch_geometric import seed_everything
 
@@ -130,3 +131,94 @@ def test_rolling_trainer_rolls_over_windows(datasets):
     for r in results:
         assert r["preds"].shape[0] == len(NODES)
         assert bool(np.isfinite(r["preds"].detach().cpu().numpy()).all())
+
+
+def test_rolling_trainer_keeps_every_past_window(datasets, monkeypatch):
+    train, val, test = datasets
+    set_device("cpu")
+    seed_everything(0)
+    model_kwargs = dict(in_channels=train.num_node_features, num_layers=1,
+                        hidden_channels=8, out_channels=OUT_CHANNELS, conv_class=GCNConv)
+    roller = RollingTrainer(
+        dataset_train_0=train, dataset_val_0=val, dataset_test_full=test,
+        model_class=myGNN, model_kwargs=model_kwargs,
+        window_size=4, step_size=4, batch_size=8, reconcile=False,
+        num_epochs_initial=1, num_epochs_update=1,
+        trainer_kwargs={"lr": 1e-2, "force_training": True, "patience": 1},
+    )
+    sizes, make = [], roller._make_datasets
+
+    def record(train_df, test_df):
+        sizes.append(len(train_df))
+        ds = make(train_df, test_df)
+        # Every window keeps the scalers of window 0.
+        assert ds[0].scalers_target is train.scalers_target
+        return ds
+    monkeypatch.setattr(roller, "_make_datasets", record)
+    roller.run()
+    rows = 4 * len(NODES)
+    assert sizes == [sizes[0] + k * rows for k in range(len(sizes) - 1)] + [sizes[0] + (len(sizes) - 1) * rows]
+
+
+def test_rolling_trainer_replay(datasets):
+    train, val, test = datasets
+    set_device("cpu")
+    model_kwargs = dict(in_channels=train.num_node_features, num_layers=1,
+                        hidden_channels=8, out_channels=OUT_CHANNELS, conv_class=GCNConv)
+
+    def run(steps):
+        seed_everything(0)
+        roller = RollingTrainer(
+            dataset_train_0=train, dataset_val_0=val, dataset_test_full=test,
+            model_class=myGNN, model_kwargs=model_kwargs,
+            window_size=OUT_CHANNELS, step_size=OUT_CHANNELS, batch_size=8, reconcile=False,
+            num_epochs_initial=1, trainer_kwargs={"lr": 1e-2, "force_training": True, "patience": 1,
+                                                  "seed": 0},
+            update="replay", replay_steps=steps, replay_lr=1e-2, replay_recent=2, warmup_on_val=True,
+        )
+        return roller.run()
+
+    static, online = run(0), run(3)
+    assert len(online) == len(test.pyg_data)
+    for r, d in zip(online, test.pyg_data):
+        assert r["preds"].shape == (len(NODES), OUT_CHANNELS)
+        assert bool(np.isfinite(r["preds"].numpy()).all())
+        assert torch.allclose(r["targets"], d.y.float())
+    # The first window is forecast after the validation warm-up, so updates already change it.
+    assert not torch.allclose(static[0]["preds"], online[0]["preds"])
+
+
+def test_lam_reg_is_removed(datasets):
+    train, val, test = datasets
+    model = myGNN(in_channels=train.num_node_features, num_layers=1,
+                  hidden_channels=8, out_channels=OUT_CHANNELS, conv_class=GCNConv)
+    with pytest.raises(ValueError, match="lam_reg"):
+        Trainer(model=model, dataset_train=train, dataset_val=val, dataset_test=test,
+                batch_size=8, reconcile=False, lam_reg=0.1)
+
+
+def test_top_level_model_reads_covariates(datasets):
+    train, val, test = datasets
+    tops = {}
+    for cov in (True, False):
+        seed_everything(0)
+        model = myGNN(in_channels=train.num_node_features, num_layers=1,
+                      hidden_channels=8, out_channels=OUT_CHANNELS, conv_class=GCNConv)
+        t = Trainer(model=model, dataset_train=train, dataset_val=val, dataset_test=test,
+                    batch_size=8, model_kwargs={"lr": 1e-2, "num_epochs": 1}, reconcile=True,
+                    top_level_model="ridge", top_level_covariates=cov)
+        tops[cov] = t.top_forecasts_test.detach().cpu().numpy()
+    # The panel loads depend on temperature, so the national mean of temp changes the forecast.
+    assert np.isfinite(tops[True]).all() and not np.allclose(tops[True], tops[False])
+
+
+def test_national_loss_trains(datasets):
+    train, val, test = datasets
+    seed_everything(0)
+    model = myGNN(in_channels=train.num_node_features, num_layers=1,
+                  hidden_channels=8, out_channels=OUT_CHANNELS, conv_class=GCNConv)
+    trainer = Trainer(model=model, dataset_train=train, dataset_val=val, dataset_test=test,
+                      batch_size=8, model_kwargs={"lr": 1e-2, "num_epochs": 1},
+                      reconcile=False, lam_national=1.0)
+    pred, *_ = trainer.train(force_training=True, patience=1)
+    assert bool(np.isfinite(pred.detach().cpu().numpy()).all())

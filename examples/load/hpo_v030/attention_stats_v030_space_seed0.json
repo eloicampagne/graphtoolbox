@@ -1,0 +1,30 @@
+{
+ "edges_distinct": 28,
+ "receivers_several_neighbours": 8,
+ "edges_into_several": 24,
+ "self_loop_attention_mean": 0.3437565863132477,
+ "influence_edge_MW_min_median_max": [
+  22.66200608482645,
+  58.06623977293388,
+  136.9160060009353
+ ],
+ "influence_two_hop_MW_median": 9.763252593274625,
+ "influence_self_MW_median": 643.4118276630466,
+ "att_dev_abs_median_year": 3.4986943006515503,
+ "inf_dev_abs_median_year": 6.685856427504506,
+ "spearman_year": 0.8121739130434782,
+ "spearman_season": [
+  0.6704347826086956,
+  0.7399999999999999,
+  0.9434782608695651,
+  0.7408695652173911
+ ],
+ "spearman_daily_median": 0.3547826086956521,
+ "spearman_daily_q25_q75": [
+  0.12543478260869564,
+  0.6069565217391304
+ ],
+ "dtw_max_spread_full_receivers": 3.725290298461914e-08,
+ "dtw_year_abs_dev_median": 2.2359969639811066,
+ "dtw_year_abs_dev_max": 5.713830279052587
+}

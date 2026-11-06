@@ -1,0 +1,35 @@
+{
+ "old": {
+  "n_operators": 46,
+  "mixture_rec_rmse": 912.6111679227357,
+  "best_unrec": "LEConv__old",
+  "best_unrec_rmse": 834.4010009765625,
+  "best_unrec_after_mint_rmse": 942.740478515625,
+  "best_rec": "LEConv__old",
+  "best_rec_rmse": 942.740478515625,
+  "dm_p_mix_vs_best_rec": 0.09023387026775112,
+  "dm_p_mix_vs_best_unrec_op_after_mint": 0.09023387026775112
+ },
+ "new": {
+  "n_operators": 46,
+  "mixture_rec_rmse": 926.8551603361353,
+  "best_unrec": "GatedGraphConv",
+  "best_unrec_rmse": 881.2474975585938,
+  "best_unrec_after_mint_rmse": 954.4725341796875,
+  "best_rec": "GATv2Conv",
+  "best_rec_rmse": 952.8717041015625,
+  "dm_p_mix_vs_best_rec": 0.05135905059382976,
+  "dm_p_mix_vs_best_unrec_op_after_mint": 0.02556414337309056
+ },
+ "default": {
+  "n_operators": 46,
+  "mixture_rec_rmse": 930.5968967139623,
+  "best_unrec": "GatedGraphConv",
+  "best_unrec_rmse": 881.2474975585938,
+  "best_unrec_after_mint_rmse": 954.4725341796875,
+  "best_rec": "GATv2Conv",
+  "best_rec_rmse": 952.8717041015625,
+  "dm_p_mix_vs_best_rec": 0.11417705540373478,
+  "dm_p_mix_vs_best_unrec_op_after_mint": 0.07251522654433624
+ }
+}

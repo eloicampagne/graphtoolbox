@@ -1,3 +1,5 @@
+import warnings
+
 import torch
 from torch_geometric.nn import GATConv, TransformerConv, GCNConv, SAGEConv
 from inspect import signature
@@ -22,6 +24,53 @@ def _mlp(ch_in, ch_out, hidden=None, act=nn.ReLU, last_act=False):
     if last_act:
         layers += [act()]
     return nn.Sequential(*layers)
+
+def attention_per_graph(edge_index, weights, num_graphs, nodes_per_graph):
+    """Match the attention weights of a batch to the edges of each of its graphs.
+
+    Attention convolutions may reorder the edges they receive: GATConv and GATv2Conv
+    remove the self-loops of their input and append new ones after every other edge
+    of the batch. Each weight is therefore matched to its edge through the edge_index
+    that the convolution returns, never by position.
+
+    Parameters
+    ----------
+    edge_index : torch.Tensor
+        [2, E_total] edge index returned by the convolution, in batch numbering.
+    weights : torch.Tensor
+        [E_total, H] (or [E_total]) attention weights, in the order of ``edge_index``.
+    num_graphs : int
+        Number of graphs in the batch. Every graph has ``nodes_per_graph`` nodes,
+        numbered consecutively as in a PyG batch, and the same edge set.
+    nodes_per_graph : int
+        Number of nodes per graph.
+
+    Returns
+    -------
+    tuple of (torch.Tensor, torch.Tensor)
+        Local edge index [2, E] of the first graph, and the weights [B, E, H] of
+        every graph in that edge order.
+    """
+    if weights.dim() == 1:
+        weights = weights.unsqueeze(-1)
+    src, dst = edge_index.to(weights.device)
+    graph = dst // nodes_per_graph
+    s_loc, d_loc = src - graph * nodes_per_graph, dst - graph * nodes_per_graph
+    first = graph == 0
+    base = torch.stack([s_loc[first], d_loc[first]])
+    E = base.size(1)
+    lookup = torch.full((nodes_per_graph * nodes_per_graph,), -1, dtype=torch.long, device=weights.device)
+    lookup[base[0] * nodes_per_graph + base[1]] = torch.arange(E, device=weights.device)
+    pos = lookup[s_loc * nodes_per_graph + d_loc]
+    slot = graph * E + pos
+    if (graph >= num_graphs).any() or (pos < 0).any() or slot.numel() != num_graphs * E \
+            or torch.bincount(slot, minlength=num_graphs * E).max() != 1:
+        raise ValueError("the graphs of the batch do not share one edge set; "
+                         "attention cannot be matched graph by graph")
+    out = weights.new_empty((num_graphs * E, weights.size(-1)))
+    out[slot] = weights
+    return base.cpu(), out.view(num_graphs, E, -1)
+
 
 class ConvAdapter(nn.Module):
     """Wraps any PyG convolution for use inside ``myGNN``.
@@ -353,12 +402,17 @@ class myGNN(nn.Module):
         conv_class=GATConv,
         conv_kwargs=None,
         heads=1,
+        edge_weight_as_attr=False,
         **kwargs
     ):
         super().__init__()
         self.conv_class = conv_class
         self.conv_kwargs = conv_kwargs or {}
         self.heads = heads
+        # When True, the scalar edge weights are also passed as a one-dimensional
+        # edge attribute to the convolutions that take one (GATConv, GATv2Conv,
+        # TransformerConv, ...), which otherwise receive a constant attribute.
+        self.edge_weight_as_attr = edge_weight_as_attr
         self.hidden_channels = hidden_channels
         self.num_layers = num_layers
 
@@ -412,6 +466,16 @@ class myGNN(nn.Module):
             else:
                 B = int(batch_vec.max().item()) + 1
                 N_per_graph = (batch_vec == 0).sum().item()
+        # Attention is matched graph by graph. When no batch vector is passed, the
+        # number of graphs comes from ``num_graphs`` (or ``batch_size``) and the batch
+        # vector itself is left untouched so that the forward pass is unchanged.
+        if return_attention and B == 1:
+            n_graphs = kwargs.get("num_graphs") or kwargs.get("batch_size")
+            if n_graphs and x.shape[0] % int(n_graphs) == 0:
+                B, N_per_graph = int(n_graphs), x.shape[0] // int(n_graphs)
+
+        if edge_attr is None and self.edge_weight_as_attr and edge_weight is not None:
+            edge_attr = edge_weight.to(torch.float32).view(-1, 1)
 
         x = self.node_encoder(x)
         x0 = x  # for DeepGCN residuals
@@ -420,7 +484,9 @@ class myGNN(nn.Module):
             attentions = {
                 "first_graph": [],  # list of (E_layer, heads)
                 "mean": [],         # list of (E_layer, heads)
-                "std": []           # list of (E_layer, heads)
+                "std": [],          # list of (E_layer, heads)
+                "per_graph": [],    # list of (B, E_layer, heads)
+                "edge_index": [],   # list of (2, E_layer), local numbering
             }
 
         for layer in self.layers:
@@ -430,6 +496,7 @@ class myGNN(nn.Module):
             out = layer(
                 x, edge_index,
                 edge_weight=edge_weight,
+                edge_attr=edge_attr,
                 edge_type=edge_type,
                 x0=x0,
                 batch=batch_vec
@@ -438,26 +505,17 @@ class myGNN(nn.Module):
 
             if return_attention and conv_adapter.last_attention is not None:
                 ei, aw = conv_adapter.last_attention
-                # ei: [2, E_total], aw: [E_total, heads]
-                E_total = aw.size(0)
-
-                if B == 1:
-                    # Single graph: trivial mapping
-                    att_first = aw
-                    att_mean = aw
-                    att_std = torch.zeros_like(aw)
-                else:
-                    # Rebuild (B, E_graph, heads)
-                    E_graph = E_total // B
-                    att_reshaped = aw.view(B, E_graph, -1)  # [B, E_graph, H]
-
-                    att_first = att_reshaped[0]             # [E_graph, H]
-                    att_mean = att_reshaped.mean(dim=0)     # [E_graph, H]
-                    att_std = att_reshaped.std(dim=0)       # [E_graph, H]
-
-                attentions["first_graph"].append(att_first.detach().cpu())
-                attentions["mean"].append(att_mean.detach().cpu())
-                attentions["std"].append(att_std.detach().cpu())
+                if ei is None:
+                    warnings.warn(f"{self.conv_class.__name__} returns attention without its edge index; "
+                                  "the weights of this layer cannot be matched to edges and are skipped")
+                    continue
+                # ei: [2, E_total] as returned by the convolution, aw: [E_total, heads]
+                base, per_graph = attention_per_graph(ei, aw.detach().cpu(), B, N_per_graph)
+                attentions["per_graph"].append(per_graph)
+                attentions["edge_index"].append(base)
+                attentions["first_graph"].append(per_graph[0])
+                attentions["mean"].append(per_graph.mean(dim=0))
+                attentions["std"].append(per_graph.std(dim=0) if B > 1 else torch.zeros_like(per_graph[0]))
 
         x = self.layers[0].act(self.norm_final(x))
         x = self.fc(x)
@@ -644,6 +702,24 @@ class AdditiveGraphModel(nn.Module):
         for gname, dim in feature_group_dims.items():
             self.group_index_map[gname] = slice(offset, offset + dim)
             offset += dim
+
+    def group_output(self, group: str, x: torch.Tensor, edge_index: torch.Tensor,
+                     edge_weight: "torch.Tensor | None" = None) -> torch.Tensor:
+        """
+        Output of one feature group, before the average over groups and the bias.
+
+        The prediction of the model is ``bias + mean_g group_output(g, ...)`` in scaled
+        target units. ``x`` holds all input features; only the columns of ``group`` are read.
+
+        :param group: Name of the feature group.
+        :param x: Node features [N, F] (several graphs may be stacked block-diagonally).
+        :param edge_index: Edge index [2, E] matching ``x``.
+        :param edge_weight: Optional edge weights [E].
+        :returns: Group output [N, out_channels].
+        """
+        h = self.encoders[group](x[:, self.group_index_map[group]])
+        y = self.gnn_branch(h, edge_index, edge_weight=edge_weight, return_attention=False)
+        return y.unsqueeze(-1) if y.dim() == 1 else y
 
     @staticmethod
     def _repeat_edge_index(edge_index: torch.Tensor, num_nodes: int, repeats: int, device=None):

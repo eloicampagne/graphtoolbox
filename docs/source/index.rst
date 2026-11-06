@@ -53,39 +53,24 @@ GraphToolbox benchmarks the entire ``torch_geometric.nn.conv`` collection agains
    * - Convolution Type
      - Status
      - Convolutions
-   * - GCN / Spectral
+   * - Propagation
      - |green|
-     - GCNConv, ChebConv, SGConv, SSGConv, LGConv, GCN2Conv, ClusterGCNConv, FAConv
-   * - Attention-based
+     - SimpleConv, GCNConv, ChebConv, SGConv, SSGConv, APPNP, GCN2Conv, ARMAConv, TAGConv, LGConv, ClusterGCNConv, MixHopConv, PANConv
+   * - Attention
      - |green|
-     - GATConv, GATv2Conv, SuperGATConv, TransformerConv, AGNNConv, DNAConv
-   * - MPNN / Aggregation
+     - GATConv, GATv2Conv, SuperGATConv, TransformerConv, AGNNConv, RGATConv, FAConv, DNAConv, GPSConv, PointTransformerConv
+   * - Gating and modulation
      - |green|
-     - SAGEConv, GENConv, GraphConv, MFConv, LEConv, SimpleConv, EGConv, GravNetConv
-   * - MLP-based (GIN-style)
+     - GatedGraphConv, ResGatedGraphConv, FiLMConv
+   * - Relational and edge-conditioned
      - |green|
-     - GINConv, GINEConv
-   * - Edge-conditioned
+     - RGCNConv, FastRGCNConv, NNConv, CGConv, GMMConv, SplineConv, FeaStConv, PDNConv, GINEConv
+   * - Point-cloud and dynamic graphs
      - |green|
-     - NNConv, ECConv, CGConv, GMMConv, GeneralConv, XConv
-   * - Recurrent / Gated
+     - EdgeConv, DynamicEdgeConv, GravNetConv, XConv
+   * - Other aggregators
      - |green|
-     - GatedGraphConv, ARMAConv, TAGConv
-   * - Residual / Deep
-     - |green|
-     - DirGNNConv, AntiSymmetricConv, FiLMConv, ResGatedGraphConv, PDNConv
-   * - Spectral / Poly
-     - |green|
-     - MixHopConv, GPSConv, FeaStConv, SplineConv, PANConv
-   * - Dynamic aggregators
-     - |green|
-     - PNAConv, EdgeConv, DynamicEdgeConv
-   * - Relational
-     - |green|
-     - RGCNConv, RGATConv, FastRGCNConv
-   * - Graph-level
-     - |green|
-     - WLConv, SignedConv
+     - SAGEConv, GraphConv, MFConv, LEConv, PNAConv, GENConv, EGConv, GINConv, GeneralConv, DirGNNConv, AntiSymmetricConv, SignedConv, WLConv, WLConvContinuous
    * - Missing optional deps
      - |red|
      - FusedGATConv (``dgNN``)
@@ -94,7 +79,7 @@ GraphToolbox benchmarks the entire ``torch_geometric.nn.conv`` collection agains
      - HANConv, HGTConv, HEATConv, HeteroConv
    * - Point-cloud
      - |white|
-     - PointNetConv, PointConv, PointGNNConv, PointTransformerConv, PPFConv
+     - PointNetConv, PointGNNConv, PPFConv
    * - CuGraph (CUDA only)
      - |white|
      - CuGraphGATConv, CuGraphRGCNConv, CuGraphSAGEConv
@@ -110,17 +95,19 @@ GraphToolbox benchmarks the entire ``torch_geometric.nn.conv`` collection agains
      - Count
      - Percentage
    * - |green|
-     - **51**
-     - **78.5 %**
+     - **53**
+     - **81.5 %**
    * - |red|
      - **1**
      - **1.5 %**
    * - |white|
-     - **13**
-     - **20.0 %**
+     - **11**
+     - **16.9 %**
    * - **Total Tested**
      - **65**
      - **100 %**
+
+Counts follow ``torch_geometric.nn.conv.__all__`` in PyTorch Geometric 2.6.1; the aliases ECConv (NNConv) and PointConv (PointNetConv) are not counted twice.
 
 FusedGATConv is not broken; it requires the ``dgNN`` package which is not available on all platforms.
 Installing ``torch-cluster``, ``torch-sparse``, and ``torch-spline-conv`` unlocked DynamicEdgeConv, GravNetConv, XConv, PANConv, and SplineConv.
@@ -172,8 +159,7 @@ Basic example of how to use GraphToolbox:
              'heads': 2,
              'lr': 1e-3,
              'batch_size': 16,
-             'adj_matrix': 'gl3sr',
-             'lam_reg': 0}
+             'adj_matrix': 'gl3sr'}
 
    model = myGNN(
        in_channels=graph_dataset_train.num_node_features,
@@ -193,8 +179,7 @@ Basic example of how to use GraphToolbox:
        dataset_test=graph_dataset_test,
        batch_size=params["batch_size"],
        return_attention=False,
-       model_kwargs={'lr': params["lr"], 'num_epochs': 200},
-       lam_reg=params["lam_reg"]
+       model_kwargs={'lr': params["lr"], 'num_epochs': 200}
    )
 
    # Train model

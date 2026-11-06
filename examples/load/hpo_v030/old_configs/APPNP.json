@@ -1,0 +1,12 @@
+{
+  "value": 0.0022941892966628075,
+  "params": {
+    "num_layers": 1,
+    "hidden_channels": 106,
+    "lr": 2e-3,
+    "K": 1,
+    "alpha": 0.94,
+    "batch_size": 16,
+    "adj_matrix": "space"
+  }
+}

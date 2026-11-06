@@ -1,0 +1,28 @@
+{
+ "netload": {
+  "direct FastRGCNConv": {
+   "unreconciled": 1323.7721389764029,
+   "top_level_TAM": 1398.2341497584114,
+   "top_level_TAM_2018": 1233.4273602197593,
+   "gnn_2018": 1213.1444843685679,
+   "mint_wls": 1269.1112871825592,
+   "dm_p_wls_vs_unreconciled": 5.7746789943376615e-09,
+   "dm_p_wls_vs_TAM": 3.369019402092741e-11,
+   "mint_shrink": 1269.4227386435991,
+   "dm_p_shrink_vs_unreconciled": 4.636524282418834e-05,
+   "dm_p_shrink_vs_TAM": 2.930102637317912e-16
+  },
+  "decomposed FastRGCNConv": {
+   "unreconciled": 1168.0980487837924,
+   "top_level_TAM": 1398.2341497584114,
+   "top_level_TAM_2018": 1233.4273602197593,
+   "gnn_2018": 1013.9206949495344,
+   "mint_wls": 1151.5493750814633,
+   "dm_p_wls_vs_unreconciled": 0.01797152099168667,
+   "dm_p_wls_vs_TAM": 9.157595134808283e-24,
+   "mint_shrink": 1151.4201853314644,
+   "dm_p_shrink_vs_unreconciled": 0.012630626275946289,
+   "dm_p_shrink_vs_TAM": 2.3912070032881448e-23
+  }
+ }
+}

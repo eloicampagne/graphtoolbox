@@ -1,0 +1,11 @@
+{
+  "value": 0.0024921318981796503,
+  "params": {
+    "num_layers": 3,
+    "hidden_channels": 345,
+    "lr": 0.0007709701259332856,
+    "heads": 3,
+    "batch_size": 16,
+    "adj_matrix": "eye"
+  }
+}

@@ -1,4 +1,4 @@
-# Exact versions of the environment that produced the ICTAI paper's tables and
+# Exact versions of the environment that produced the GraphToolbox paper's tables and
 # figures (macOS 26.5, Apple M4 Pro, CPU). Reproducing a number requires this
 # environment plus the seeds pinned in the example scripts; a different BLAS or
 # a different torch build changes the last digits of a training run.

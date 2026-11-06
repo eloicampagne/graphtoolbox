@@ -30,7 +30,7 @@ MASKS = os.path.join(OUT, f"edge_masks_{CONV}_{ADJ}.npy")
 CKPT_DIR = os.path.join(HERE, "checkpoints", f"{CONV}_{ADJ}",
                         f"batch{BATCH}_hidden{HIDDEN}_layers{LAYERS}_epochs{TRAIN_EPOCHS}")
 
-# The checkpointed model the paper reports comes from the ICTAI run_experiments
+# The checkpointed model the paper reports comes from the paper's run_experiments
 # notebook: its feature set adds four computed columns to the example config,
 # which is what takes the encoder from 183 to 187 inputs.
 DATA_KWARGS = {

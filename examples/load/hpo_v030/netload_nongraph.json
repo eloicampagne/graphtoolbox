@@ -1,0 +1,128 @@
+{
+ "Shared MLP": {
+  "cfg": {
+   "hidden_channels": 64,
+   "num_layers": 2,
+   "lr": 0.001,
+   "batch_size": 8
+  },
+  "rmse": [
+   1526.1632302083347,
+   1574.7965775482828,
+   1528.4921102210592,
+   1501.8171216668047,
+   1569.9499279007916,
+   1581.0536310914613,
+   1567.047698599897,
+   1500.7900777776829,
+   1587.6627189603207,
+   1573.2522936934247
+  ],
+  "rmse_mean": 1551.1025387668058,
+  "rmse_sd": 33.31466591204488,
+  "smape_mean": 2.574736036028288
+ },
+ "Per-node MLP": {
+  "cfg": {
+   "hidden_channels": 64,
+   "num_layers": 3,
+   "lr": 0.002,
+   "batch_size": 4
+  },
+  "rmse": [
+   1398.2341497584114,
+   1391.703797726639,
+   1561.577832218365,
+   1415.543504847507,
+   1369.8779734141579,
+   1579.1541249513848,
+   1559.5186658335606,
+   1515.1284570974124,
+   1446.550732009394,
+   1494.52252282518
+  ],
+  "rmse_mean": 1473.1811760682012,
+  "rmse_sd": 78.64962924744692,
+  "smape_mean": 2.4771358795777636
+ },
+ "XGBoost (b-global)": {
+  "cfg": {
+   "learning_rate": 0.1,
+   "max_depth": 4,
+   "min_child_weight": 10.0,
+   "subsample": 0.85,
+   "colsample_bytree": 0.8,
+   "reg_alpha": 0.0001,
+   "reg_lambda": 0.1,
+   "n_estimators": 340
+  },
+  "rmse": [
+   1757.7527236148535,
+   1760.4204861429248,
+   1753.9416353534905
+  ],
+  "rmse_mean": 1757.3716150370894,
+  "rmse_sd": 3.2561955867196217,
+  "smape_mean": 2.888540573627291
+ },
+ "XGBoost (b-local)": {
+  "cfg": {
+   "learning_rate": 0.1,
+   "max_depth": 4,
+   "min_child_weight": 1.0,
+   "subsample": 1.0,
+   "colsample_bytree": 1.0,
+   "n_estimators": 120
+  },
+  "rmse": [
+   1938.3536153677435,
+   1938.3536153677435,
+   1938.3536153677435
+  ],
+  "rmse_mean": 1938.3536153677435,
+  "rmse_sd": 0.0,
+  "smape_mean": 3.1312130342353606
+ },
+ "XGBoost (b-global), decomposed": {
+  "cfg": {
+   "Load": {
+    "learning_rate": 0.1,
+    "max_depth": 4,
+    "min_child_weight": 6.0,
+    "subsample": 1.0,
+    "colsample_bytree": 1.0,
+    "reg_alpha": 0.001,
+    "reg_lambda": 1.0,
+    "n_estimators": 340
+   },
+   "Wind_power": {
+    "learning_rate": 0.1,
+    "max_depth": 4,
+    "min_child_weight": 10.0,
+    "subsample": 0.85,
+    "colsample_bytree": 0.8,
+    "reg_alpha": 0.0001,
+    "reg_lambda": 0.1,
+    "n_estimators": 340
+   },
+   "Solar_power": {
+    "learning_rate": 0.1,
+    "max_depth": 4,
+    "min_child_weight": 10.0,
+    "subsample": 0.85,
+    "colsample_bytree": 0.8,
+    "reg_alpha": 0.0001,
+    "reg_lambda": 0.1,
+    "n_estimators": 340
+   }
+  },
+  "rmse": [
+   1680.0462511940934,
+   1679.244426671714,
+   1675.5642228106808
+  ],
+  "rmse_mean": 1678.2849668921626,
+  "rmse_sd": 2.390097677682151,
+  "smape_mean": 2.7216845002425187
+ }
+}

@@ -1,0 +1,10 @@
+{
+  "value": null,
+  "params": {
+    "num_layers": 2,
+    "hidden_channels": 256,
+    "lr": 0.001,
+    "batch_size": 16,
+    "adj_matrix": "space"
+  }
+}

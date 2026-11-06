@@ -26,9 +26,8 @@ HERE = Path(__file__).resolve().parent
 OUTPUT = HERE / "results_cached_statistics"
 AGGREGATE_PREFIX = "aggregate__"
 LOAD_TABLE = [
-    "LEConv", "GatedGraphConv", "GATv2Conv", "ARMAConv",
-    "ResGatedGraphConv", "SGConv", "RGATConv", "RGCNConv", "GCNConv",
-    "GATConv",
+    "GatedGraphConv", "GATv2Conv", "ARMAConv", "ResGatedGraphConv", "GATConv",
+    "SGConv", "RGATConv", "RGCNConv", "GCNConv", "LEConv",
 ]
 
 

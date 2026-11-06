@@ -1,0 +1,169 @@
+{
+ "replaced": {
+  "LEConv": {
+   "old_rmse": 931.7397458202645,
+   "new_rmse": 931.7397458202645
+  },
+  "GATConv": {
+   "old_rmse": 923.1591497548052,
+   "new_rmse": 923.1591497548052
+  },
+  "APPNP": {
+   "old_rmse": 1093.0378842168773,
+   "new_rmse": 1093.0378842168773
+  }
+ },
+ "table": {
+  "LEConv": {
+   "mape": 1.2993976878247473,
+   "rmse": 931.7397458202645,
+   "rmse_se": 39.403982748124555,
+   "mape_se": 0.034093710698393544
+  },
+  "GatedGraphConv": {
+   "mape": 1.2221159866685551,
+   "rmse": 881.2474076223043,
+   "rmse_se": 28.817052004392725,
+   "mape_se": 0.03200730523547835
+  },
+  "GATv2Conv": {
+   "mape": 1.2177629353571437,
+   "rmse": 881.3016119772333,
+   "rmse_se": 29.672305972280796,
+   "mape_se": 0.02923381166179603
+  },
+  "ARMAConv": {
+   "mape": 1.2391496125477746,
+   "rmse": 887.4798688292568,
+   "rmse_se": 31.554468674786634,
+   "mape_se": 0.030365369787924604
+  },
+  "ResGatedGraphConv": {
+   "mape": 1.2206065284795093,
+   "rmse": 889.5589416716693,
+   "rmse_se": 36.17890567542123,
+   "mape_se": 0.033583448182976885
+  },
+  "SGConv": {
+   "mape": 1.24014133114195,
+   "rmse": 898.1824829750058,
+   "rmse_se": 33.01315143758793,
+   "mape_se": 0.03379209045202842
+  },
+  "RGATConv": {
+   "mape": 1.2214601649903032,
+   "rmse": 899.1580531677342,
+   "rmse_se": 33.516859754338526,
+   "mape_se": 0.030899402157449227
+  },
+  "RGCNConv": {
+   "mape": 1.2263639886655993,
+   "rmse": 910.2124458165368,
+   "rmse_se": 43.3182811079019,
+   "mape_se": 0.033411730649910834
+  },
+  "GCNConv": {
+   "mape": 1.2029958533103815,
+   "rmse": 925.0875151908664,
+   "rmse_se": 46.22237982987333,
+   "mape_se": 0.032724685262634
+  },
+  "GATConv": {
+   "mape": 1.2475564577075637,
+   "rmse": 923.1591497548052,
+   "rmse_se": 36.39514380838186,
+   "mape_se": 0.031035936928799433
+  },
+  "Uniform average": {
+   "mape": 1.112711405967864,
+   "rmse": 831.8260909393607,
+   "rmse_se": 37.61299440053574,
+   "mape_se": 0.03303774847540238
+  },
+  "MLpol (bottom-up)": {
+   "mape": 1.0625839738180327,
+   "rmse": 802.6003654346837,
+   "rmse_se": 38.0114597601234,
+   "mape_se": 0.032179357430262776
+  },
+  "MLpol (top-level)": {
+   "mape": 1.028039930094435,
+   "rmse": 789.4828799691949,
+   "rmse_se": 37.656298930729676,
+   "mape_se": 0.030629741251020574
+  }
+ },
+ "sweep_size": 46,
+ "sweep_mape_min_median_max": [
+  1.2029958533103815,
+  1.310030141609901,
+  1.601813683334394
+ ],
+ "best_single": "GatedGraphConv",
+ "best_single_rmse": 881.2474076223043,
+ "top10_by_rmse": [
+  "GatedGraphConv",
+  "GATv2Conv",
+  "ARMAConv",
+  "ResGatedGraphConv",
+  "SGConv",
+  "RGATConv",
+  "SAGEConv",
+  "RGCNConv",
+  "TransformerConv",
+  "GATConv"
+ ],
+ "mcs_retained": 34,
+ "mcs_members": [
+  "ARMAConv",
+  "ChebConv",
+  "ClusterGCNConv",
+  "DirGNNConv",
+  "DynamicEdgeConv",
+  "EGConv",
+  "EdgeConv",
+  "FastRGCNConv",
+  "FeaStConv",
+  "FiLMConv",
+  "GATConv",
+  "GATv2Conv",
+  "GCN2Conv",
+  "GCNConv",
+  "GINConv",
+  "GINEConv",
+  "GMMConv",
+  "GatedGraphConv",
+  "GeneralConv",
+  "GraphConv",
+  "LEConv",
+  "LGConv",
+  "MixHopConv",
+  "PANConv",
+  "PDNConv",
+  "RGATConv",
+  "RGCNConv",
+  "ResGatedGraphConv",
+  "SAGEConv",
+  "SGConv",
+  "SSGConv",
+  "SignedConv",
+  "SuperGATConv",
+  "TransformerConv"
+ ],
+ "table_in_mcs": [
+  "LEConv",
+  "GatedGraphConv",
+  "GATv2Conv",
+  "ARMAConv",
+  "ResGatedGraphConv",
+  "SGConv",
+  "RGATConv",
+  "RGCNConv",
+  "GCNConv",
+  "GATConv"
+ ],
+ "holm_dm_separates_from_best_in_table": [],
+ "mlpol_top_vs_best_dm_pvalue": 3.7354488437007293e-06,
+ "mlpol_top_vs_best_better": "MLpol (top-level)",
+ "mlpol_top_minus_best_rmse": -91.76452765310944
+}

@@ -1,0 +1,12 @@
+# Trained weights: attached to the GitHub release, not committed.
+checkpoints*/
+# Raw forecasts: packaged into examples/*/forecasts_paper by package_paper_forecasts.py.
+preds/
+netload_v030/
+load_sweep_v030.npz
+mint_all*.npz
+# Run logs and local symlinks to the graph folder.
+logs/
+graphs/
+nohup.out
+figures/

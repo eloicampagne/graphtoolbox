@@ -27,20 +27,15 @@ Legend:
 
 | Convolution Type        | Status | Convolutions |
 |-------------------------|--------|--------------|
-| GCN / Spectral          | 🟢 | GCNConv, ChebConv, SGConv, SSGConv, LGConv, GCN2Conv, ClusterGCNConv, FAConv |
-| Attention-based         | 🟢 | GATConv, GATv2Conv, SuperGATConv, TransformerConv, AGNNConv, DNAConv |
-| MPNN / Aggregation      | 🟢 | SAGEConv, GENConv, GraphConv, MFConv, LEConv, SimpleConv, EGConv, GravNetConv |
-| MLP-based (GIN-style)   | 🟢 | GINConv, GINEConv |
-| Edge-conditioned        | 🟢 | NNConv, ECConv, CGConv, GMMConv, GeneralConv, XConv |
-| Recurrent / Gated       | 🟢 | GatedGraphConv, ARMAConv, TAGConv |
-| Residual / Deep         | 🟢 | DirGNNConv, AntiSymmetricConv, FiLMConv, ResGatedGraphConv, PDNConv |
-| Spectral / Poly         | 🟢 | MixHopConv, GPSConv, FeaStConv, SplineConv, PANConv |
-| Dynamic aggregators     | 🟢 | PNAConv, EdgeConv, DynamicEdgeConv |
-| Relational              | 🟢 | RGCNConv, RGATConv, FastRGCNConv |
-| Graph-level             | 🟢 | WLConv, SignedConv |
+| Propagation             | 🟢 | SimpleConv, GCNConv, ChebConv, SGConv, SSGConv, APPNP, GCN2Conv, ARMAConv, TAGConv, LGConv, ClusterGCNConv, MixHopConv, PANConv |
+| Attention               | 🟢 | GATConv, GATv2Conv, SuperGATConv, TransformerConv, AGNNConv, RGATConv, FAConv, DNAConv, GPSConv, PointTransformerConv |
+| Gating and modulation   | 🟢 | GatedGraphConv, ResGatedGraphConv, FiLMConv |
+| Relational and edge-conditioned | 🟢 | RGCNConv, FastRGCNConv, NNConv, CGConv, GMMConv, SplineConv, FeaStConv, PDNConv, GINEConv |
+| Point-cloud and dynamic graphs | 🟢 | EdgeConv, DynamicEdgeConv, GravNetConv, XConv |
+| Other aggregators       | 🟢 | SAGEConv, GraphConv, MFConv, LEConv, PNAConv, GENConv, EGConv, GINConv, GeneralConv, DirGNNConv, AntiSymmetricConv, SignedConv, WLConv, WLConvContinuous |
 | Missing optional deps   | 🔴 | FusedGATConv (`dgNN`) |
 | Heterogeneous graphs    | ⚪️ | HANConv, HGTConv, HEATConv, HeteroConv |
-| Point-cloud             | ⚪️ | PointNetConv, PointConv, PointGNNConv, PointTransformerConv, PPFConv |
+| Point-cloud             | ⚪️ | PointNetConv, PointGNNConv, PPFConv |
 | CuGraph (CUDA only)     | ⚪️ | CuGraphGATConv, CuGraphRGCNConv, CuGraphSAGEConv |
 | Hypergraph              | ⚪️ | HypergraphConv |
 
@@ -48,10 +43,12 @@ Detailed statistics per status:
 
 | Status | Count | Percentage |
 |--------|-------|------------|
-| 🟢 | **51** | **78.5 %** |
+| 🟢 | **53** | **81.5 %** |
 | 🔴 | **1**  | **1.5 %**  |
-| ⚪️ | **13** | **20.0 %** |
+| ⚪️ | **11** | **16.9 %** |
 | **Total Tested** | **65** | **100 %** |
+
+Counts follow `torch_geometric.nn.conv.__all__` in PyTorch Geometric 2.6.1; the aliases ECConv (NNConv) and PointConv (PointNetConv) are not counted twice.
 
 FusedGATConv is not broken; it requires the `dgNN` package which is not available on all platforms. Installing it will make it pass.
 Installing `torch-cluster`, `torch-sparse`, and `torch-spline-conv` unlocked DynamicEdgeConv, GravNetConv, XConv, PANConv, and SplineConv.
@@ -132,8 +129,7 @@ params = {'num_layers': 3,
           'hidden_channels': 364, 
           'lr': 1e-3, 
           'batch_size': 16, 
-          'adj_matrix': 'gl3sr', 
-          'lam_reg': 0}
+          'adj_matrix': 'gl3sr'}
 
 model = myGNN(
     in_channels=graph_dataset_train.num_node_features,
@@ -152,8 +148,7 @@ trainer = Trainer(
     dataset_test=graph_dataset_test,
     batch_size=params["batch_size"],
     return_attention=False,
-    model_kwargs={'lr': params["lr"], 'num_epochs': 200},
-    lam_reg=params["lam_reg"]
+    model_kwargs={'lr': params["lr"], 'num_epochs': 200}
 )
 
 # Train model
@@ -182,14 +177,16 @@ Special **thanks** to all contributors of the GraphToolbox project:
 - Itai Zehavi
 
 ## Citation
-If you use the GraphToolbox in your work, please cite the corresponding [paper](https://arxiv.org/pdf/2609.24609v1):
+If you use the GraphToolbox in your work, please cite the corresponding [preprint](https://arxiv.org/abs/2609.24609):
 
 ```bibtex
-@inproceedings{campagne2026graphtoolbox,
+@misc{campagne2026graphtoolbox,
     author = {Campagne, Eloi and Amara-Ouali, Yvenn and Goude, Yannig and Kalogeratos, Argyris},
     title = {GraphToolbox: A Configurable Python Framework for Graph Neural Network Forecasting},
-    booktitle = {IEEE International Conference on Tools with Artificial Intelligence (ICTAI)},
     year = {2026},
+    eprint = {2609.24609},
+    archivePrefix = {arXiv},
+    primaryClass = {cs.LG},
 }
 ```
 

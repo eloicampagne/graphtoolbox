@@ -1,0 +1,42 @@
+{
+ "_GATConv": {
+  "sender_share_year": 0.9981589020250701,
+  "sender_share_daily_median": 0.9988447631909274,
+  "abs_dev_median_pct": 2.2360005781661307,
+  "abs_dev_max_pct": 5.713866246682486,
+  "spearman_dev_vs_dtw_weight": 0.17838382682788015
+ },
+ "_prior": {
+  "sender_share_year": 0.18800647623658318,
+  "sender_share_daily_median": 0.18646436972451247,
+  "abs_dev_median_pct": 46.63153062464196,
+  "abs_dev_max_pct": 250.80015786881978,
+  "spearman_dev_vs_dtw_weight": 0.8486353271854261
+ },
+ "_GATv2Conv": {
+  "sender_share_year": 0.9409473845835926,
+  "sender_share_daily_median": 0.9397961617189977,
+  "abs_dev_median_pct": 2.0368714740860994,
+  "abs_dev_max_pct": 5.212023310599278,
+  "spearman_dev_vs_dtw_weight": 0.3512581529084565
+ },
+ "_GATv2Conv_prior": {
+  "sender_share_year": 0.28102185892760523,
+  "sender_share_daily_median": 0.33047302368816145,
+  "abs_dev_median_pct": 8.894578420834726,
+  "abs_dev_max_pct": 48.58114497987709,
+  "spearman_dev_vs_dtw_weight": 0.811652159297553
+ },
+ "_space": {
+  "sender_share_year": 0.6517397135385575,
+  "sender_share_daily_median": 0.6688695192387186,
+  "abs_dev_median_pct": 4.522003354071491,
+  "abs_dev_max_pct": 15.94875038051975
+ },
+ "_GATv2Conv_space": {
+  "sender_share_year": 0.9296812696365462,
+  "sender_share_daily_median": 0.8719618453801705,
+  "abs_dev_median_pct": 2.4096542480640637,
+  "abs_dev_max_pct": 12.105041381566483
+ }
+}

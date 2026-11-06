@@ -406,10 +406,11 @@ class GraphDataset:
         """
         Fit or load feature scalers (MinMax per node).
 
-        - During training: fits a new scaler for each node.
+        - During training: fits a new scaler for each node, unless scalers are
+          provided (a rolling update keeps the scalers of its first window).
         - During validation/test: checks that scalers are provided.
         """
-        if self.period == 'train':
+        if self.period == 'train' and self.scalers_feat is None:
             self.scalers_feat = {}
             for node in self.nodes:
                 values = self.dataframe[self.dataframe[self.data.node_var] == node][self.features].values
@@ -422,10 +423,11 @@ class GraphDataset:
         """
         Fit or load target scalers (MinMax per node).
 
-        - During training: fits a new scaler for each node.
+        - During training: fits a new scaler for each node, unless scalers are
+          provided (a rolling update keeps the scalers of its first window).
         - During validation/test: requires existing scalers.
         """
-        if self.period == 'train':
+        if self.period == 'train' and self.scalers_target is None:
             self.scalers_target = {}
             for node in self.nodes:
                 values = self.dataframe[self.dataframe[self.data.node_var] == node][self.target].values.reshape(-1, 1)

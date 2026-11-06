@@ -1051,7 +1051,12 @@ def compute_ALE(group_values, group_contrib, n_bins=20):
     :raises ValueError: If there are no finite values or all bins are empty.
     """
     """
-    ALE for one additive group or a single feature.
+    Binned mean of a group contribution against one feature, centered.
+
+    This is a marginal plot of observed contributions, without evaluating the model at
+    the bin edges, so correlated features of the group move together. For first-order
+    accumulated local effects through the model, use
+    :func:`graphtoolbox.interpretability.additive_ale`.
 
     group_values: Tensor[num_nodes, T] (unscaled feature values)
     group_contrib: Tensor[num_nodes, T] (unscaled group effects)

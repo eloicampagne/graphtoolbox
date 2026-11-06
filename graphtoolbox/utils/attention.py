@@ -8,6 +8,9 @@ from sklearn.decomposition import PCA
 import torch
 import umap
 
+from graphtoolbox.interpretability.diagnostics import _attention_cache_tensor
+
+
 @torch.no_grad()
 def load_attention_batches(directory_path: str) -> tuple[torch.Tensor, torch.Tensor]:
     """
@@ -43,25 +46,13 @@ def load_attention_batches(directory_path: str) -> tuple[torch.Tensor, torch.Ten
     )
 
     for file in batch_files:
-        data = torch.load(os.path.join(directory_path, file), map_location="cpu")
+        data = torch.load(os.path.join(directory_path, file), map_location="cpu", weights_only=False)
         if 'attention_weights' not in data or 'edge_idx' not in data:
             print(f"[WARN] Malformed file {file}, skipping.")
             continue
-
-        attn_per_layer = data['attention_weights']  # list len L
+        attn_tensor = _attention_cache_tensor(data, file)      # [L, B, E_graph, H]
         edge_index = data['edge_idx'] if edge_index is None else edge_index
-
-        L = len(attn_per_layer)
-        E_total, H = attn_per_layer[0].shape
-        E_graph = edge_index.shape[1]
-        B = data.get('num_graphs', E_total // E_graph)
-        if E_total % E_graph != 0 or B != (E_total // E_graph):
-            raise ValueError(f"Inconsistent sizes in {file}: E_total={E_total}, E_graph={E_graph}, B={B}")
-
-        # [L, E_total, H] -> [L, B, E_graph, H] -> [L, H, B, E_graph]
-        attn_tensor = torch.stack(attn_per_layer, dim=0)                  # [L, E_total, H]
-        attn_tensor = attn_tensor.view(L, B, E_graph, H).permute(0, 3, 1, 2)
-        all_graphs.append(attn_tensor)
+        all_graphs.append(attn_tensor.permute(0, 3, 1, 2))      # [L, H, B, E_graph]
 
     if not all_graphs:
         raise RuntimeError(f"Aucun dump d'attention trouvé dans {directory_path}")

@@ -1,4 +1,4 @@
-"""Produce the exact net-load numbers for the ICTAI paper table (mirror of tab:load).
+"""Produce the exact net-load numbers for the GraphToolbox paper table (mirror of tab:load).
 
 Reads the cached convolution sweep, temporal cells and target, and reports, on the
 national net-load series (sum over the 12 regions, 2019 test set):

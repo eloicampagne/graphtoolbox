@@ -139,7 +139,17 @@ class Trainer:
             - edge_weight (torch.Tensor[E]) or None
             - return_attention (bool): collect attention during validation/test.
             - return_group_outputs (bool): ask additive models to return group-wise contributions.
-            - lam_reg (float): graph smoothness regularizer weight (pairwise node prediction L2).
+            - lam_reg: removed in 0.3.1. Its penalty compared rows of the batch that were not
+              nodes and pulled the forecasts of all nodes toward each other; a nonzero value
+              raises an error. Use lam_national to penalize the error of the national sum.
+            - top_level_covariates (bool, default True): the top-level model fitted for MinT
+              also reads the national mean of the covariates of the dataset at each step
+              (weather and calendar indicators, without lagged or lead columns).
+            - lam_national (float): weight of the squared error of the national sum, added to
+              the per-node loss. The nodes enter the sum with the slopes of their target
+              scalers, so that it is the error of the summed forecast in target units, up to
+              one constant; the per-node loss ignores the covariance of the node errors,
+              which the national error depends on.
             - seed (int): seeds the global generators and the training loader. The
               initial weights are drawn when the model is built, so seed them with
               graphtoolbox.utils.set_seed before building it.
@@ -179,7 +189,12 @@ class Trainer:
         self.edge_weight = kwargs.get('edge_weight', None)
         self.return_attention = kwargs.get('return_attention', False)
         self.return_group_outputs = kwargs.get('return_group_outputs', False)
-        self.lam_reg = kwargs.get('lam_reg', 0)
+        if kwargs.get('lam_reg', 0):
+            raise ValueError("lam_reg was removed in 0.3.1: its penalty compared rows of the batch "
+                             "that were not nodes. Use lam_national to penalize the national error.")
+        self.top_level_covariates = bool(kwargs.get('top_level_covariates', True))
+        self.lam_national = float(kwargs.get('lam_national', 0) or 0)
+        self._national_w = None
         self.loss_fn = kwargs.get('loss_fn', 'mse')  # 'mse' or 'nmae'
         self.fused_adam = kwargs.get('fused_adam', False)
         # The model is built before the Trainer, so this seed fixes the batch
@@ -281,7 +296,7 @@ class Trainer:
         
         Notes
         -----
-        - Applies graph smoothness regularization weighted by lam_reg.
+        - Adds lam_national times the squared error of the national sum when it is set.
         - Uses early stopping with best-checkpoint saving.
         """
         self.num_epochs = kwargs.get('num_epochs', self.model_kwargs['num_epochs'])
@@ -454,7 +469,7 @@ class Trainer:
         Notes
         -----
         - Converts batch attributes ['x','y_scaled','y','edge_weight','mask_y'] to float32 on DEVICE.
-        - Loss = MSE over masked targets + lam_reg * graph-smoothness penalty.
+        - Loss = MSE over masked targets + lam_national * squared error of the national sum.
         - For additive models with attention, averages attention across batches in eval.
         """
         assert mode in ['train', 'eval']
@@ -498,15 +513,18 @@ class Trainer:
                             mask=getattr(batch, 'mask_y', None),
                             return_attention=True,
                             return_group_outputs=self.return_group_outputs,
-                            batch_size=self.batch_size,
-                            save=True,
-                            save_path=save_path
+                            num_graphs=batch.num_graphs,
                         )
                         # Forward contract:
                         # (y_hat) or (y_hat, attention) or (y_hat, group_outputs, attention)
                         if isinstance(model_out, tuple):
                             out = model_out[0]
                             attention_per_group = model_out[-1]
+                            if isinstance(attention_per_group, dict) and attention_per_group.get("per_graph"):
+                                torch.save({"attention_weights": attention_per_group["per_graph"],
+                                            "edge_idx": attention_per_group["edge_index"][0],
+                                            "num_graphs": int(batch.num_graphs),
+                                            "format": "per_graph"}, save_path)
                         else:
                             out = model_out
                         out = out.squeeze().view(-1, num_nodes).T
@@ -520,7 +538,7 @@ class Trainer:
                                 mask=getattr(batch, 'mask_y', None),
                                 return_attention=True,
                                 return_group_outputs=self.return_group_outputs,
-                                batch_size=self.batch_size
+                                num_graphs=batch.num_graphs
                             )
                             if isinstance(model_out, tuple):
                                 out = model_out[0]
@@ -530,12 +548,18 @@ class Trainer:
                                 dict_attention = {}
                             out = out.squeeze().view(-1, num_nodes).T
 
+                            # Only the per-edge summaries are averaged over batches; the
+                            # edge index is kept from the first batch.
+                            dict_attention = {k: v for k, v in dict_attention.items()
+                                              if k in ("first_graph", "mean", "std", "edge_index")}
                             if tot_dict_attention is None:
                                 tot_dict_attention = {k: [v_i.clone() if torch.is_tensor(v_i) else v_i
                                                           for v_i in v] for k, v in dict_attention.items()}
                                 attention_batches = 1
                             else:
                                 for k in tot_dict_attention.keys():
+                                    if k == "edge_index":
+                                        continue
                                     for j in range(len(tot_dict_attention[k])):
                                         a = tot_dict_attention[k][j]
                                         b = dict_attention.get(k, [None]*len(tot_dict_attention[k]))[j]
@@ -577,14 +601,21 @@ class Trainer:
                                  / (torch.sum(torch.abs(y_s) * mask) + 1e-6))
                 else:
                     base_loss = torch.sum(((out - y_s) ** 2) * mask) / mask.sum()
-                if self.lam_reg:
-                    pred_diff = out[:, None, :] - out[None, :, :]
-                    reg_loss = torch.norm(pred_diff, p=2, dim=2).mean()
-                    loss = base_loss + self.lam_reg * reg_loss
-                else:
-                    # Skip the O(N^2 T) pairwise penalty entirely when unused: it would
-                    # otherwise be computed and back-propagated for a zero contribution.
-                    loss = base_loss
+                loss = base_loss
+                if self.lam_national:
+                    # out, y_s and mask hold the flattened [graphs, nodes, horizon] batch under a
+                    # reshape that does not group nodes, so undo it before summing over nodes.
+                    B = batch.num_graphs
+                    o = out.T.reshape(B, num_nodes, -1)
+                    t = y_s.T.reshape(B, num_nodes, -1)
+                    mk = mask.T.reshape(B, num_nodes, -1)
+                    if self._national_w is None:
+                        slopes = [float(np.ravel(self.dataset_train.scalers_target[n].data_range_)[0])
+                                  for n in self.dataset_train.nodes]
+                        w = torch.tensor(slopes, dtype=torch.float32)
+                        self._national_w = (w / w.mean()).to(o.device)
+                    e = ((o - t) * mk * self._national_w[None, :, None]).sum(dim=1) / num_nodes
+                    loss = loss + self.lam_national * (e ** 2).mean()
                 del y_s
                 if mode == 'train':
                     loss.backward()
@@ -600,6 +631,8 @@ class Trainer:
         # Finalize attention averaging using only the number of aggregated batches
         if (mode == 'eval') and (return_attention) and (not save) and (tot_dict_attention is not None) and (attention_batches > 0):
             for k in tot_dict_attention.keys():
+                if k == "edge_index":
+                    continue
                 for j in range(len(tot_dict_attention[k])):
                     v = tot_dict_attention[k][j]
                     if torch.is_tensor(v):
@@ -641,7 +674,9 @@ class Trainer:
         Side Effects
         ------------
         - When return_group_outputs is True, populates self.group_outputs_test as:
-          dict[group_name] -> torch.Tensor[num_nodes, T] of unscaled group contributions.
+          dict[group_name] -> torch.Tensor[num_nodes, T] of group contributions in target units,
+          and self.group_intercept_test as the per-node intercept, so that the two sum to the
+          unreconciled prediction.
 
         Notes
         -----
@@ -729,18 +764,22 @@ class Trainer:
             for gname in group_names:
                 group_concat[gname] = torch.cat(group_concat[gname], dim=1)  # [num_nodes, T]
 
-            unscaled_groups = {}
-            for gname, g_mat in group_concat.items():   # g_mat: [num_nodes, T]
-
-                g_unscaled = []
-                for node_idx, node in enumerate(self.nodes):
-                    scaler = self.dataset_train.scalers_target[node]
-                    g_np = g_mat[node_idx].reshape(-1, 1).numpy()        # [T, 1]
-                    g_unscaled_np = scaler.inverse_transform(g_np).reshape(-1)  # [T]
-                    g_unscaled.append(torch.tensor(g_unscaled_np, dtype=torch.float32))
-
-                unscaled_groups[gname] = torch.stack(g_unscaled, dim=0).to(DEVICE)  # [num_nodes, T]
-            self.group_outputs_test = unscaled_groups
+            # The model predicts b + (1/G) * sum_g Y_g in scaled units. With a linear target
+            # scaler s(z) = a * z + c, the contribution of group g in target units is
+            # a * Y_g / G, and the intercept s(b) holds the bias and the scaler offset, so
+            # the contributions and the intercept sum to the unreconciled prediction.
+            n_groups = len(group_names)
+            bias = float(getattr(self.model, 'bias', torch.zeros(1)).detach().cpu().reshape(-1)[0])
+            unscaled_groups, intercepts = {}, []
+            for node_idx, node in enumerate(self.nodes):
+                scaler = self.dataset_train.scalers_target[node]
+                offset = float(scaler.inverse_transform(np.zeros((1, 1)))[0, 0])
+                slope = float(scaler.inverse_transform(np.ones((1, 1)))[0, 0]) - offset
+                intercepts.append(slope * bias + offset)
+                for gname, g_mat in group_concat.items():   # g_mat: [num_nodes, T]
+                    unscaled_groups.setdefault(gname, []).append(slope * g_mat[node_idx].float() / n_groups)
+            self.group_outputs_test = {g: torch.stack(v, dim=0).to(DEVICE) for g, v in unscaled_groups.items()}
+            self.group_intercept_test = torch.tensor(intercepts, dtype=torch.float32)  # [num_nodes]
         return loss, pred_rescaled, y_targets
 
     def evaluate(self, losses: Union[List[str], str] = ['mape', 'rmse']):
@@ -882,8 +921,11 @@ class Trainer:
                     return_attention=False
                 )
 
-                y_hat = y_hat.reshape(num_nodes, -1)
-                y_true = batch.y.reshape(num_nodes, -1)
+                # A batch stacks its graphs one after the other, so regroup the rows by node
+                # before measuring per-node errors and national sums.
+                n_graphs = batch.num_graphs
+                y_hat = y_hat.reshape(n_graphs, num_nodes, -1).permute(1, 0, 2).reshape(num_nodes, -1)
+                y_true = batch.y.reshape(n_graphs, num_nodes, -1).permute(1, 0, 2).reshape(num_nodes, -1)
 
                 y_hat_rescaled = self._rescale_predictions(y_hat)
                 base_errors_list.append(y_hat_rescaled.cpu() - y_true.cpu())
@@ -953,8 +995,11 @@ class Trainer:
 
         Notes
         -----
-        Features: lag-48 (1-day), lag-336 (7-day), EWM-48, EWM-336, and cyclical
-        encodings of hour-of-day, day-of-week, and month.  All features are
+        Features: lag-48 (1-day), lag-336 (7-day), EWM-48, EWM-336, cyclical
+        encodings of hour-of-day, day-of-week, and month, and, with
+        ``top_level_covariates`` (default), the national mean of each covariate of
+        the dataset at the forecast step (weather and calendar indicators; lagged and
+        lead columns are left out, as are one-hot dummies).  All features are
         computed on the chronologically concatenated train+val+test series so that
         lag values at split boundaries are correct.  Every feature is restricted to
         the information set available at the origin of the forecast block: the two
@@ -1028,6 +1073,18 @@ class Trainer:
                 'hour_sin', 'hour_cos', 'dow_sin', 'dow_cos', 'month_sin', 'month_cos']
 
         feat_full = make_features(s_full)
+        if self.top_level_covariates:
+            # National mean of the covariates at each step, read like every other model of the
+            # pipeline reads them; lagged and lead columns (suffix _l<k>) and dummies are left out.
+            dummies = tuple(f"{d}_" for d in (getattr(self.dataset_train.data, 'dummies', None) or []))
+            exog = [c for c in self.dataset_train.features
+                    if not re.search(r'_l-?\d+$', c) and not c.startswith(dummies)
+                    and c != target_col and c in self.dataset_train.dataframe.columns]
+            ex = pd.concat([ds.dataframe.groupby('date')[exog].mean()
+                            for ds in (self.dataset_train, self.dataset_val, self.dataset_test) if ds is not None])
+            ex = ex[~ex.index.duplicated(keep='first')].add_prefix('exog_')
+            feat_full = feat_full.join(ex)
+            FEAT = FEAT + list(ex.columns)
 
         def get_X_y(s: pd.Series):
             # Both X and y are sliced from feat_full so they are always the same length.
@@ -1178,29 +1235,48 @@ class Trainer:
 
 class RollingTrainer:
     """
-    Warm-start rolling retraining without future leakage.
+    Warm-start rolling forecast over the test period without future leakage.
 
-    Behavior:
-    ---------
+    Every window is forecast before its observations are used, then the model is
+    updated with them and the next window starts from the updated weights. The
+    scalers and the graph stay those of ``dataset_train_0``.
+
+    Two update rules are available.
+
+    ``update="retrain"`` (default) refits through a ``Trainer``:
+
     - Window 0:
         TRAIN = df_train_base
         VAL   = df_val_base
         TEST  = first test window
-
     - Window k >= 1:
-        TRAIN = df_train_base + test_window_{k-1}    (historical + past month)
+        TRAIN = df_train_base + test windows 0, ..., k-1   (expanding history)
         VAL   = df_val_base
-        TEST  = test_window_k
-
+        TEST  = test window k
+      trained for ``num_epochs_update`` epochs with the early stopping of the
+      Trainer on the validation set.
     - Last window:
         If remaining timestamps < window_size, a final window is created with
         size = remaining timestamps.
 
-    All windows warm-start from the previous model.
+    ``update="replay"`` takes ``replay_steps`` Adam steps (learning rate
+    ``replay_lr``, gradient clipping of the Trainer) after each window, on
+    mini-batches that join the ``replay_recent`` most recent samples to samples
+    drawn uniformly from all earlier ones (the training set, then every past
+    window), so that the update follows recent data without forgetting the
+    history. Windows must then tile the test set in whole samples
+    (``window_size == step_size``, a multiple of ``out_channels``), and
+    ``warmup_on_val=True`` first rolls through the validation samples, updating
+    without scoring, so that the first test window is forecast by a model that
+    has seen the validation period like a model refitted before the test.
+
+    ``initial_model`` starts from a trained model instead of fitting window 0
+    for ``num_epochs_initial`` epochs; it is updated in place.
 
     Reproducibility: ``trainer_kwargs={'seed': s}`` seeds the initial weights
     of the window-0 model and, through each window's Trainer, its batch order
-    and dropout (``'deterministic': True`` is forwarded as well).
+    and dropout (``'deterministic': True`` is forwarded as well). In replay mode
+    the same seed draws the replayed samples.
     """
 
     def __init__(
@@ -1217,6 +1293,12 @@ class RollingTrainer:
         trainer_kwargs: Optional[Dict[str, Any]] = None,
         num_epochs_initial: int = 50,
         num_epochs_update: int = 5,
+        update: str = "retrain",
+        initial_model: Optional[torch.nn.Module] = None,
+        replay_steps: int = 10,
+        replay_lr: float = 1e-4,
+        replay_recent: int = 7,
+        warmup_on_val: bool = False,
     ):
         self.ds_train_0 = dataset_train_0
         self.ds_val_0 = dataset_val_0
@@ -1229,6 +1311,17 @@ class RollingTrainer:
         self.trainer_kwargs = trainer_kwargs or {}
         self.num_epochs_initial = int(num_epochs_initial)
         self.num_epochs_update = int(num_epochs_update)
+
+        if update not in ("retrain", "replay"):
+            raise ValueError("update must be 'retrain' or 'replay'.")
+        self.update = update
+        self.initial_model = initial_model
+        self.replay_steps = int(replay_steps)
+        self.replay_lr = float(replay_lr)
+        self.replay_recent = int(replay_recent)
+        self.warmup_on_val = bool(warmup_on_val)
+        if self.update == "replay" and not 0 < self.replay_recent < self.batch_size:
+            raise ValueError("replay_recent must lie in (0, batch_size).")
 
         self.window_size = int(window_size)
         self.step_size = int(step_size)
@@ -1263,6 +1356,10 @@ class RollingTrainer:
         self.out_channels   = getattr(self.ds_train_0, "out_channels", None)
         if self.dataset_kwargs is None or self.out_channels is None:
             raise AttributeError("dataset_train_0 must expose dataset_kwargs and out_channels.")
+        if self.update == "replay" and (self.window_size != self.step_size
+                                        or self.step_size % self.out_channels):
+            raise ValueError("replay windows must tile the test set: window_size == step_size, "
+                             "a multiple of out_channels.")
 
         self.nodes = self.ds_train_0.nodes
         self.num_nodes = self.ds_train_0.num_nodes
@@ -1308,34 +1405,20 @@ class RollingTrainer:
         data_w.df_val   = self.df_val_base
         data_w.df_test  = test_df
 
-        ds_train = DatasetCls(
-            data_w,
-            period="train",
+        # Every window keeps the scalers of window 0, which the warm-started
+        # weights were fitted under, and its graph.
+        common = dict(
+            scalers_feat=self.ds_train_0.scalers_feat,
+            scalers_target=self.ds_train_0.scalers_target,
             out_channels=self.out_channels,
             nodes=self.nodes,
             dataset_kwargs=self.dataset_kwargs,
+            graph_folder=self.ds_train_0.graph_folder,
+            adj_matrix=self.ds_train_0.adj_matrix,
         )
-
-        ds_val = DatasetCls(
-            data_w,
-            period="val",
-            scalers_feat=ds_train.scalers_feat,
-            scalers_target=ds_train.scalers_target,
-            out_channels=self.out_channels,
-            nodes=self.nodes,
-            dataset_kwargs=self.dataset_kwargs,
-        )
-
-        ds_test = DatasetCls(
-            data_w,
-            period="test",
-            scalers_feat=ds_train.scalers_feat,
-            scalers_target=ds_train.scalers_target,
-            out_channels=self.out_channels,
-            nodes=self.nodes,
-            dataset_kwargs=self.dataset_kwargs,
-        )
-
+        ds_train = DatasetCls(data_w, period="train", **common)
+        ds_val = DatasetCls(data_w, period="val", **common)
+        ds_test = DatasetCls(data_w, period="test", **common)
         return ds_train, ds_val, ds_test
 
     # -------------------------------------------------------------
@@ -1362,8 +1445,11 @@ class RollingTrainer:
         print(f"[RollingTrainer] total windows={len(windows)} "
               f"(window_size={self.window_size}, step_size={self.step_size})")
 
-        current_model: Optional[torch.nn.Module] = None
-        previous_test_df: Optional[pd.DataFrame] = None
+        if self.update == "replay":
+            return self._run_replay()
+
+        current_model: Optional[torch.nn.Module] = self.initial_model
+        past_test_dfs: List[pd.DataFrame] = []
 
         # Split Trainer kwargs into:
         #  - init_kwargs: passed to Trainer(...)
@@ -1395,17 +1481,12 @@ class RollingTrainer:
                 train_df = self.df_train_base.copy()
                 desc = "historical train"
             else:
-                # Windows k >= 1: base train + previous test month
-                if previous_test_df is None:
-                    # Should not happen, but guard anyway
-                    train_df = self.df_train_base.copy()
-                    desc = "historical train (fallback, no prev test)"
-                else:
-                    train_df = pd.concat(
-                        [self.df_train_base, previous_test_df],
-                        axis=0
-                    ).sort_values("date")
-                    desc = "historical + previous test window"
+                # Windows k >= 1: base train + every past test window
+                train_df = pd.concat(
+                    [self.df_train_base] + past_test_dfs,
+                    axis=0
+                ).sort_values("date")
+                desc = f"historical + {len(past_test_dfs)} past test window(s)"
 
             ds_train, ds_val, ds_test = self._make_datasets(train_df, test_df_w)
 
@@ -1420,10 +1501,11 @@ class RollingTrainer:
                 )
                 # The model is built here, before any Trainer, so its initial
                 # weights are seeded here; each window's Trainer reseeds the rest.
-                if init_kwargs.get('seed') is not None:
-                    set_seed(init_kwargs['seed'],
-                             deterministic=init_kwargs.get('deterministic', False))
-                current_model = self.model_class(**self.model_kwargs)
+                if current_model is None:
+                    if init_kwargs.get('seed') is not None:
+                        set_seed(init_kwargs['seed'],
+                                 deterministic=init_kwargs.get('deterministic', False))
+                    current_model = self.model_class(**self.model_kwargs)
             else:
                 print(
                     f"[RollingTrainer] Window {w_id} | "
@@ -1458,7 +1540,7 @@ class RollingTrainer:
             )
 
             current_model = trainer.model
-            previous_test_df = test_df_w
+            past_test_dfs.append(test_df_w)
 
             results.append(
                 {
@@ -1470,4 +1552,104 @@ class RollingTrainer:
                 }
             )
 
+        return results
+
+    # -------------------------------------------------------------
+    def _cast(self, data):
+        data = data.clone()
+        for attr in ("x", "y", "y_scaled", "edge_weight", "mask_y"):
+            if getattr(data, attr, None) is not None and getattr(data, attr).is_floating_point():
+                setattr(data, attr, getattr(data, attr).to(torch.float32))
+        return data
+
+    def _rescale(self, out: np.ndarray) -> torch.Tensor:
+        """[samples, nodes, out_channels] scaled outputs -> [nodes, samples * out_channels] loads."""
+        out = out.transpose(1, 0, 2).reshape(self.num_nodes, -1)
+        return torch.as_tensor(np.stack([
+            self.ds_train_0.scalers_target[n].inverse_transform(out[i].reshape(-1, 1)).reshape(-1)
+            for i, n in enumerate(self.nodes)]), dtype=torch.float32)
+
+    def _run_replay(self) -> List[Dict[str, Any]]:
+        """Forecast each window, then take replay steps on recent and past samples."""
+        from torch_geometric.data import Batch
+        seed = self.trainer_kwargs.get("seed")
+        model = self.initial_model
+        if model is None:
+            print(f"[RollingTrainer] Window 0 model: {self.num_epochs_initial} epochs on the training set")
+            init_kwargs = {k: v for k, v in self.trainer_kwargs.items()
+                           if k not in {"num_epochs", "patience", "min_delta", "force_training",
+                                        "saving_directory", "plot_loss", "dynamic_graph", "save",
+                                        "batch_size_save"}}
+            if seed is not None:
+                set_seed(seed, deterministic=init_kwargs.get('deterministic', False))
+            model_kwargs = {"num_epochs": self.num_epochs_initial}
+            if "lr" in self.trainer_kwargs:
+                model_kwargs["lr"] = self.trainer_kwargs["lr"]
+            trainer = Trainer(model=self.model_class(**self.model_kwargs), dataset_train=self.ds_train_0,
+                              dataset_val=self.ds_val_0, dataset_test=self.ds_test_full,
+                              batch_size=self.batch_size, reconcile=False, model_kwargs=model_kwargs,
+                              **init_kwargs)
+            trainer.train(**self.trainer_kwargs)
+            model = trainer.model
+        model = model.to(DEVICE)
+        rng = np.random.default_rng(seed)
+        if seed is not None:
+            torch.manual_seed(seed)
+        opt = torch.optim.Adam(model.parameters(), lr=self.replay_lr)
+        pool = [self._cast(d) for d in self.ds_train_0.pyg_data]
+        N = self.num_nodes
+
+        def forward(batch):
+            out = model(batch.x, batch.edge_index, edge_weight=getattr(batch, "edge_weight", None))
+            return out.view(batch.num_graphs, N, -1)
+
+        def update():
+            model.train()
+            recent = pool[-self.replay_recent:]
+            for _ in range(self.replay_steps):
+                idx = rng.integers(0, len(pool) - self.replay_recent, self.batch_size - self.replay_recent)
+                batch = Batch.from_data_list(recent + [pool[i] for i in idx]).to(DEVICE)
+                out = forward(batch)
+                y = batch.y_scaled.view(batch.num_graphs, N, -1)
+                m = batch.mask_y.view(batch.num_graphs, N, -1)
+                loss = (((out - y) ** 2) * m).sum() / m.sum()
+                opt.zero_grad()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
+                opt.step()
+
+        def roll(samples, score):
+            preds = []
+            for start in range(0, len(samples), per_window):
+                window = [self._cast(d) for d in samples[start:start + per_window]]
+                if score:
+                    model.eval()
+                    with torch.no_grad():
+                        preds.append(forward(Batch.from_data_list(window).to(DEVICE)).cpu().numpy())
+                pool.extend(window)
+                if self.replay_steps:
+                    update()
+            return preds
+
+        per_window = self.step_size // self.out_channels
+        if self.warmup_on_val:
+            print(f"[RollingTrainer] Replay warm-up on {len(self.ds_val_0.pyg_data)} validation samples")
+            roll(self.ds_val_0.pyg_data, score=False)
+        test = self.ds_test_full.pyg_data
+        preds = roll(test, score=True)
+        print(f"[RollingTrainer] Replay: {len(preds)} windows of {per_window} sample(s), "
+              f"{self.replay_steps} step(s) at lr={self.replay_lr:g} after each")
+        # Window labels come from the test timestamps when they cover the samples.
+        label = (lambda i: self.dates[i]) if len(test) * self.out_channels <= self.num_time else (lambda i: None)
+        results = []
+        for w_id, (p, start) in enumerate(zip(preds, range(0, len(test), per_window))):
+            y = np.stack([d.y.numpy() for d in test[start:start + per_window]])
+            stop = min(start + per_window, len(test))
+            results.append({
+                "window_index": w_id,
+                "window_start": label(start * self.out_channels),
+                "window_end": label(stop * self.out_channels - 1),
+                "preds": self._rescale(p),
+                "targets": torch.as_tensor(y.transpose(1, 0, 2).reshape(N, -1), dtype=torch.float32),
+            })
         return results

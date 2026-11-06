@@ -30,6 +30,27 @@ examples/load/latent_representations_mlp_gnn.npz
 !examples/results_cached_statistics/*.csv
 !examples/results_cached_statistics/*.json
 
+# Paper runners (examples/load/hpo_v030): scripts, configurations, JSON results, the region map and the two
+# timing tables are committed; forecasts, checkpoints and caches are rebuilt by the runners or attached to the
+# GitHub release.
+examples/load/hpo_v030/**/*.npz
+examples/load/hpo_v030/*.npy
+examples/load/hpo_v030/__pycache__/
+examples/load/hpo_v030/checkpoints*/
+examples/load/hpo_v030/additive_v030*/
+examples/load/hpo_v030/backup_47/
+examples/load/hpo_v030/cache_online/
+examples/load/hpo_v030/netload_v030/
+examples/load/hpo_v030/preds*/
+examples/load/hpo_v030/logs/
+examples/load/hpo_v030/graphs/
+!examples/load/hpo_v030/timing/
+!examples/load/hpo_v030/timing/timing_per_epoch.csv
+!examples/load/hpo_v030/footprint_v030.csv
+examples/load/kalman_*.npz
+examples/load/*.log
+examples/*/pred_*.npy
+
 # OS / editor cruft
 .DS_Store
 .ipynb_checkpoints/
