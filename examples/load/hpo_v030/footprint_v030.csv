@@ -1,7 +1,7 @@
 model,dataset,n_nodes,n_edges,in_channels,params_k,infer_ms
-GraphSAGE,France (12 nodes),12,142,187,32.0,0.43
-GAT,France (12 nodes),12,142,187,24.4,0.7
-APPNP,France (12 nodes),12,142,187,15.5,0.8
-GraphSAGE,WEAVE (500 nodes),500,242624,50,23.3,19.58
-GAT,WEAVE (500 nodes),500,242624,50,15.6,52.04
-APPNP,WEAVE (500 nodes),500,242624,50,6.8,95.3
+GraphSAGE,France (12 nodes),12,142,187,32.0,0.3
+GAT,France (12 nodes),12,142,187,24.4,0.44
+APPNP,France (12 nodes),12,142,187,15.5,0.49
+GraphSAGE,WEAVE (500 nodes),500,242624,50,23.3,13.97
+GAT,WEAVE (500 nodes),500,242624,50,15.6,40.21
+APPNP,WEAVE (500 nodes),500,242624,50,6.8,70.73
