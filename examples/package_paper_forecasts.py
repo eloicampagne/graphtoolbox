@@ -53,7 +53,7 @@ def aggregates(node_predictions: dict[str, np.ndarray], target: np.ndarray,
 
 
 def package_load() -> None:
-    """Static sweep (47 operators, with aggregates) and one-shot recurrent cells."""
+    """Static sweep (46 operators, with aggregates) and one-shot recurrent cells."""
     with np.load(RUNS / "load_sweep_v030.npz") as archive:
         write_archive(HERE / "load" / "forecasts_paper" / "load_sweep.npz",
                       {name: archive[name] for name in archive.files})

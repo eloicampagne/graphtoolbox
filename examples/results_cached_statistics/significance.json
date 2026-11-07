@@ -1,6 +1,6 @@
 {
   "load_mcs_level": 0.9,
-  "load_mcs_total": 47,
+  "load_mcs_total": 46,
   "load_mcs_retained": 34,
   "load_mcs_members": [
     "ARMAConv",
@@ -40,6 +40,6 @@
   ],
   "load_table_best": "GatedGraphConv",
   "load_table_holm_dm_separates_from_best": [],
-  "load_mlpol_vs_best_dm_pvalue": 3.659879003247696e-06,
+  "load_mlpol_vs_best_dm_pvalue": 3.7354488437007293e-06,
   "load_mlpol_vs_best_dm_better": "MLpol (top-level)"
 }

@@ -53,7 +53,7 @@ fig.tight_layout(pad=0.3)
 fig.savefig(os.path.join(OUT, "timing_per_epoch_v030.pdf"))
 plt.close(fig)
 
-# Figure 2: national RMSE of the 47 operators of the load sweep.
+# Figure 2: national RMSE of the 46 operators of the load sweep.
 stats = json.load(open(os.path.join(HERE, "stats_v030.json")))
 with np.load(os.path.join(HERE, "load_sweep_v030.npz")) as z:
     arr = {k: z[k] for k in z.files}
