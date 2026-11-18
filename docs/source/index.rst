@@ -62,8 +62,9 @@ Features
       :link-type: doc
 
       ``Trainer`` handles early stopping, forecasting metrics and MinT reconciliation,
-      ``Optimizer`` runs Optuna searches over the model and the graph, and ``RollingTrainer``
-      refits on rolling windows or updates a trained model every day.
+      ``Optimizer`` runs Optuna searches over the model and the graph, ``RollingTrainer``
+      refits on rolling windows or updates a trained model every day, and
+      ``OnlineForecaster`` forecasts a data stream block by block.
 
    .. grid-item-card:: Reconciliation
       :link: _autosummary/graphtoolbox.training.reconciliation
@@ -337,6 +338,43 @@ Cached forecasts can be reconciled without a model:
    # base [nodes, T] and top [T] to reconcile; their errors on a validation period.
    coherent = reconcile(base, top, base_errors_val, top_errors_val, covariance="shrink")
    total = coherent[-1]          # coherent forecast of the total
+
+Forecasting on a stream
+-----------------------
+
+``Trainer.predict(dataset)`` forecasts any ``GraphDataset`` built with the scalers of the
+training set. Unlike the test predictions of ``train()``, which are multiplied by the mask of
+observed targets, its forecasts stay defined when the target is NaN, so the dataset may hold
+future timestamps.
+
+``OnlineForecaster`` takes the raw rows of a stream, with the columns of the files read by
+``DataClass``. ``forecast`` receives the next blocks of ``out_channels`` timestamps without
+their target and returns one forecast per node and timestamp. ``update`` receives the observed
+targets of blocks already sent and updates the model by replay, as
+``RollingTrainer(update="replay")`` does: the new samples join the pool, then ``replay_steps``
+Adam steps run on mini-batches of the ``replay_recent`` most recent samples and of samples drawn
+from the whole history. The lags, computed features and dummies are derived as in ``DataClass``,
+from a buffer of the last ``history_steps`` timestamps. The forecaster runs on the device of the model, and
+``torch.save`` / ``torch.load(..., weights_only=False)`` followed by ``to(device)`` carry it
+from one run of a scheduled job to the next.
+
+.. code-block:: python
+
+   from graphtoolbox.training import OnlineForecaster
+
+   fc = OnlineForecaster(trainer.model, graph_dataset_train,
+                         pool=[graph_dataset_train, graph_dataset_val],
+                         replay_steps=10, replay_lr=1e-4, seed=0)
+   for day in stream:                            # one block of 48 half-hours per day
+       forecast = fc.forecast(day.covariates)     # columns: date, node, forecast
+       ...
+       fc.update(day.observed)                    # date, node, target
+
+Each call must cover whole blocks aligned with those of the training data, because a sample
+forecasts ``out_channels`` timestamps from the features of the first one. On a static graph the
+replay engine stores the pool in preallocated tensors and indexes them, so that a mini-batch is
+not collated from Python objects at each step; its forecasts and updates equal those of the
+collated batches bit for bit.
 
 Expert Aggregation
 ------------------

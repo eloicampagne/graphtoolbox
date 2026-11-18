@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.3.2 — 2026-11-18
+
+### Added
+
+- `Trainer.predict(dataset)`: forecasts of any `GraphDataset` in target units, without the mask
+  of observed targets that sets the test predictions of `train()` to zero where the target is
+  NaN, so that future timestamps can be forecast. A forecast of the total, when given, is
+  reconciled with the MinT projection fitted on the validation set.
+- `graphtoolbox.training.OnlineForecaster`: forecasts a stream of raw rows block by block
+  (`forecast`) and updates the model by replay when the observations arrive (`update`). Lags,
+  computed features and dummies are derived as in `DataClass` from a buffer of past rows; the
+  scalers and the graph stay those of the training set.
+  The buffer holds every node at every date, so that a missing row leaves an empty row instead
+  of shifting the lags, and it keeps the lags of every date forecast and not yet updated, so
+  that late observations are prepared like timely ones. Dummies are matched to the training
+  columns by value (`1`, `1.0` and `"1"` encode the same category), including the
+  `<node_var>Int` column that `DataClass` derives. A missing covariate raises an error, and
+  zeroed block-start rows, misaligned blocks and blocks updated twice raise warnings. The
+  replay runs on the device of the model (or `device=`); `to(device)` moves a forecaster
+  restored with `torch.load`.
+- `graphtoolbox.training.ReplayEngine`: the replay update shared by `OnlineForecaster` and
+  `RollingTrainer(update="replay")`.
+
+### Changed
+
+- `RollingTrainer(update="replay")` indexes a pool stored in preallocated tensors instead of
+  collating each mini-batch with `Batch.from_data_list`. Its forecasts are unchanged bit for
+  bit; assembling a mini-batch of 32 graphs takes 0.07 ms instead of 0.60 ms.
+
 ## 0.3.1 — 2026-11-06
 
 ### Added

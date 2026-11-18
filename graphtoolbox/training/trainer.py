@@ -790,6 +790,59 @@ class Trainer:
             self.group_intercept_test = torch.tensor(intercepts, dtype=torch.float32)  # [num_nodes]
         return loss, pred_rescaled, y_targets
 
+    def predict(self, dataset: "GraphDataset", batch_size: int = 256,
+                top_forecast: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """
+        Forecast every sample of ``dataset`` with the current model.
+
+        Unlike the test predictions of :meth:`train`, the forecasts are not multiplied by
+        the mask of observed targets, so ``dataset`` may hold future timestamps whose
+        target is NaN. Build it with the scalers of ``dataset_train`` (for instance
+        ``GraphDataset(data, period="test", scalers_feat=..., scalers_target=...)``).
+        For forecasts on a stream of raw rows, see
+        :class:`graphtoolbox.training.OnlineForecaster`.
+
+        Parameters
+        ----------
+        dataset : GraphDataset
+            Samples to forecast, on the nodes of ``dataset_train``.
+        batch_size : int, default=256
+            Graphs per forward pass.
+        top_forecast : torch.Tensor, optional
+            Forecast of the total ``[T]``. With ``reconcile=True`` the node forecasts are
+            reconciled with it by the MinT projection fitted on the validation set.
+            Without it no reconciliation is applied: the node forecasts and their sum are
+            already coherent, and the projection leaves a coherent vector unchanged.
+
+        Returns
+        -------
+        torch.Tensor
+            Forecasts ``[num_nodes, len(dataset) * out_channels]`` in target units, on CPU.
+        """
+        from graphtoolbox.training.online import NodeScaler
+        if getattr(self, "_target_scaler", None) is None:
+            self._target_scaler = NodeScaler(self.dataset_train.scalers_target, self.nodes)
+        self.model.eval()
+        N, outs = self.num_nodes, []
+        loader = PyGDataLoader(dataset, batch_size=batch_size, shuffle=False)
+        with torch.no_grad():
+            for batch in loader:
+                batch = batch.to(DEVICE)
+                ew = getattr(batch, 'edge_weight', None)
+                y_hat = self.model(batch.x.float(), batch.edge_index,
+                                   edge_weight=None if ew is None else ew.float(),
+                                   mask=getattr(batch, 'mask_y', None),
+                                   return_group_outputs=False, return_attention=False)
+                outs.append(y_hat.view(batch.num_graphs, N, -1).cpu())
+        if not outs:
+            return torch.empty((N, 0))
+        z = torch.cat(outs).permute(1, 0, 2).reshape(N, -1).numpy()
+        preds = torch.from_numpy(self._target_scaler.inverse_transform(z))
+        if self.reconcile and top_forecast is not None:
+            preds = self._min_trace_reconciliation(preds.to(DEVICE), top_forecast=top_forecast)
+            preds = preds[:N].cpu()
+        return preds
+
     def evaluate(self, losses: Union[List[str], str] = ['mape', 'rmse']):
         """
         Evaluate trained model on test set using given metrics.
@@ -1565,23 +1618,8 @@ class RollingTrainer:
         return results
 
     # -------------------------------------------------------------
-    def _cast(self, data):
-        data = data.clone()
-        for attr in ("x", "y", "y_scaled", "edge_weight", "mask_y"):
-            if getattr(data, attr, None) is not None and getattr(data, attr).is_floating_point():
-                setattr(data, attr, getattr(data, attr).to(torch.float32))
-        return data
-
-    def _rescale(self, out: np.ndarray) -> torch.Tensor:
-        """[samples, nodes, out_channels] scaled outputs -> [nodes, samples * out_channels] loads."""
-        out = out.transpose(1, 0, 2).reshape(self.num_nodes, -1)
-        return torch.as_tensor(np.stack([
-            self.ds_train_0.scalers_target[n].inverse_transform(out[i].reshape(-1, 1)).reshape(-1)
-            for i, n in enumerate(self.nodes)]), dtype=torch.float32)
-
     def _run_replay(self) -> List[Dict[str, Any]]:
         """Forecast each window, then take replay steps on recent and past samples."""
-        from torch_geometric.data import Batch
         seed = self.trainer_kwargs.get("seed")
         model = self.initial_model
         if model is None:
@@ -1601,44 +1639,19 @@ class RollingTrainer:
                               **init_kwargs)
             trainer.train(**self.trainer_kwargs)
             model = trainer.model
-        model = model.to(DEVICE)
-        rng = np.random.default_rng(seed)
-        if seed is not None:
-            torch.manual_seed(seed)
-        opt = torch.optim.Adam(model.parameters(), lr=self.replay_lr)
-        pool = [self._cast(d) for d in self.ds_train_0.pyg_data]
+        from graphtoolbox.training.online import NodeScaler, ReplayEngine
+        engine = ReplayEngine(model, self.ds_train_0.pyg_data, self.num_nodes, self.batch_size,
+                              self.replay_steps, self.replay_lr, self.replay_recent, seed,
+                              device=DEVICE)
         N = self.num_nodes
-
-        def forward(batch):
-            out = model(batch.x, batch.edge_index, edge_weight=getattr(batch, "edge_weight", None))
-            return out.view(batch.num_graphs, N, -1)
-
-        def update():
-            model.train()
-            recent = pool[-self.replay_recent:]
-            for _ in range(self.replay_steps):
-                idx = rng.integers(0, len(pool) - self.replay_recent, self.batch_size - self.replay_recent)
-                batch = Batch.from_data_list(recent + [pool[i] for i in idx]).to(DEVICE)
-                out = forward(batch)
-                y = batch.y_scaled.view(batch.num_graphs, N, -1)
-                m = batch.mask_y.view(batch.num_graphs, N, -1)
-                loss = (((out - y) ** 2) * m).sum() / m.sum()
-                opt.zero_grad()
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
-                opt.step()
 
         def roll(samples, score):
             preds = []
             for start in range(0, len(samples), per_window):
-                window = [self._cast(d) for d in samples[start:start + per_window]]
+                window = samples[start:start + per_window]
                 if score:
-                    model.eval()
-                    with torch.no_grad():
-                        preds.append(forward(Batch.from_data_list(window).to(DEVICE)).cpu().numpy())
-                pool.extend(window)
-                if self.replay_steps:
-                    update()
+                    preds.append(engine.predict(window))
+                engine.observe(window)
             return preds
 
         per_window = self.step_size // self.out_channels
@@ -1651,6 +1664,7 @@ class RollingTrainer:
               f"{self.replay_steps} step(s) at lr={self.replay_lr:g} after each")
         # Window labels come from the test timestamps when they cover the samples.
         label = (lambda i: self.dates[i]) if len(test) * self.out_channels <= self.num_time else (lambda i: None)
+        scaler = NodeScaler(self.ds_train_0.scalers_target, self.nodes)
         results = []
         for w_id, (p, start) in enumerate(zip(preds, range(0, len(test), per_window))):
             y = np.stack([d.y.numpy() for d in test[start:start + per_window]])
@@ -1659,7 +1673,8 @@ class RollingTrainer:
                 "window_index": w_id,
                 "window_start": label(start * self.out_channels),
                 "window_end": label(stop * self.out_channels - 1),
-                "preds": self._rescale(p),
+                "preds": torch.from_numpy(scaler.inverse_transform(
+                    p.transpose(1, 0, 2).reshape(N, -1))),
                 "targets": torch.as_tensor(y.transpose(1, 0, 2).reshape(N, -1), dtype=torch.float32),
             })
         return results

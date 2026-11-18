@@ -1,10 +1,12 @@
-"""Model training, early stopping and forecasting metrics."""
+"""Model training, early stopping, forecasting on a stream and forecasting metrics."""
 
 from graphtoolbox._lazy import install_lazy_exports
 
 _SYMBOL_MODULES = {
     "Trainer": ".trainer",
     "RollingTrainer": ".trainer",
+    "OnlineForecaster": ".online",
+    "ReplayEngine": ".online",
     "EarlyStopping": ".trainer",
     "set_device": ".trainer",
     "set_seed": ".trainer",
