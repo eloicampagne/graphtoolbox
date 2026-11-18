@@ -11,7 +11,7 @@ project = 'GraphToolbox'
 copyright = '2025–2026, Eloi Campagne'
 author = 'Eloi Campagne'
 version = '0.3'
-release = '0.3.1'
+release = '0.3.2'
 
 # -- General configuration ---------------------------------------------------
 extensions = [
