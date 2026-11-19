@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "GraphToolbox"
-version = "0.3.2"
+version = "0.3.3"
 description = "A Python toolbox for graph processing and analysis with Graph Neural Network utilities."
 readme = "README.md"
 authors = [
     { name = "Eloi Campagne", email = "eloi.campagne@gmail.com" }
 ]
 license = "GPL-3.0-or-later"
-requires-python = ">=3.10,<3.13"
+requires-python = ">=3.10"
 
 dependencies = [
     "numpy",
@@ -40,6 +40,8 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Operating System :: OS Independent",
 ]
 

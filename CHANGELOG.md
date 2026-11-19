@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.3.3 — 2026-11-19
+
+### Added
+
+- `Aggregation.observe(experts, y)`: feeds a block of observations, as the `update` of `opera`,
+  and refreshes `coefficients_`, so that `predict` and `observe` aggregate a stream block by
+  block. The weights advance one step at a time inside the block. A call continues the
+  statistics of `run` or of an earlier `observe`, skips the steps whose target is NaN and keeps
+  no history, so the memory of the mixture stays constant.
+
+### Changed
+
+- `requires-python` drops the upper bound `<3.13`, which no incompatibility motivated, and the CI
+  also runs on Python 3.13 and 3.14. The test suite passes on Python 3.14 with torch 2.15,
+  torch-geometric 2.8.1 and pandas 3.1.
+
 ## 0.3.2 — 2026-11-18
 
 ### Added
