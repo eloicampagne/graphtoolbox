@@ -244,8 +244,8 @@ class Aggregation:
         Apply the fitted static weights (:attr:`coefficients_`) to new experts.
 
         Use this for out-of-sample combination once the mixture has been fitted
-        on a history via :meth:`run`. For time-varying online weights on a fresh
-        sequence, call :meth:`run` again with the new observations.
+        on a history via :meth:`run` or :meth:`observe`. To let the weights
+        track a stream, call :meth:`observe` on each block once it is observed.
 
         Parameters
         ----------
@@ -258,7 +258,7 @@ class Aggregation:
             Aggregated forecast of shape ``[T]``.
         """
         if self.coefficients_ is None:
-            raise RuntimeError("Aggregation is not fitted; call `run` first.")
+            raise RuntimeError("Aggregation is not fitted; call `run` or `observe` first.")
         X = _to_numpy(experts)
         if X.shape[1] != self.coefficients_.shape[0]:
             raise ValueError(
@@ -343,6 +343,54 @@ class Aggregation:
         pred = float(x @ p)
         self._accumulate(x, pred, float(y_t))
         self._last_p = None
+
+    def observe(self, experts: ArrayLike, y: ArrayLike) -> "Aggregation":
+        """
+        Feed a block of observed steps and refresh :attr:`coefficients_`.
+
+        This is ``opera``'s ``update``: the weights advance one step at a time
+        inside the block, and the weights reached at the end serve
+        :meth:`predict` for the next block. Together, :meth:`predict` and
+        :meth:`observe` aggregate a stream block by block with constant memory.
+        The call continues the statistics left by :meth:`run` or by an earlier
+        :meth:`observe`; on a fresh instance it starts from the prior. Steps
+        whose observation is not finite are skipped.
+
+        Parameters
+        ----------
+        experts : array-like of shape [T, K]
+            Expert forecasts for the block.
+        y : array-like of shape [T]
+            Observations, NaN where missing.
+
+        Returns
+        -------
+        Aggregation
+            ``self``.
+        """
+        if self.model == "best":
+            raise ValueError("model='best' is an offline oracle; use `run`.")
+        X = _to_numpy(experts)
+        yv = _to_numpy(y).ravel()
+        if X.ndim != 2:
+            raise ValueError(f"`experts` must be 2-D [T, K], got shape {X.shape}.")
+        if X.shape[0] != yv.shape[0]:
+            raise ValueError(
+                f"Time dimension mismatch: experts has T={X.shape[0]}, y has T={yv.shape[0]}."
+            )
+        if self._K is None:
+            self.reset(X.shape[1])
+        elif X.shape[1] != self._K:
+            raise ValueError(f"Expected {self._K} experts, got {X.shape[1]}.")
+        ok = np.isfinite(yv)
+        if not np.isfinite(X[ok]).all():
+            raise ValueError("`experts` must be finite on the observed steps.")
+        for t in np.flatnonzero(ok):
+            p = self._current_weights()
+            self._accumulate(X[t], float(X[t] @ p), float(yv[t]))
+        self._last_p = None
+        self.coefficients_ = self._current_weights()
+        return self
 
     @property
     def streaming_weights_(self) -> np.ndarray:
